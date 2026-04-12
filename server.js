@@ -241,6 +241,21 @@ function computeVWAP(bars) {
 
 function getBarsForDate(allBars, dateStr) {
   return (allBars || []).filter((b) => isoDateNY(b.t) === dateStr);
+function splitPriorAndTradeDates(allBars, tradeDate) {
+  const prior = [];
+  const trade = [];
+
+  for (const b of allBars || []) {
+    const d = isoDateNY(b.t);
+    if (d === tradeDate) trade.push(b);
+    else if (d < tradeDate) prior.push(b);
+  }
+
+  return { prior, trade };
+}
+
+
+  
 }
 
 function filterBarsByTime(bars, startTime, endTime) {
