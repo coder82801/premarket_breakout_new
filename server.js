@@ -782,7 +782,7 @@ async function buildLiveBreakout(symbols) {
 }
 
 app.get("/test", (req, res) => {
-  res.send("SERVER OK");
+  res.json({ status: "SERVER OK" });
 });
 
 app.get("/api/default-symbols", (req, res) => {
