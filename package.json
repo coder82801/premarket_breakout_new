@@ -1,0 +1,12 @@
+{
+  "name": "breakout-score-engine",
+  "version": "1.0.0",
+  "description": "Premarket breakout score engine using Alpaca market data",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
