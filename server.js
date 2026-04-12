@@ -650,7 +650,7 @@ function summarizeBreakout(rows) {
 }
 
 async function buildBacktestBreakout(dateStr, symbols) {
-  const lookbackStart = new Date(new Date(dateStr).getTime() - 45 * 86400000);
+  const lookbackStart = new Date(new Date(dateStr).getTime() - 12 * 86400000);
   const dailyStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "00:00");
   const dailyEnd = zonedDateTimeToUtcISO(dateStr, "23:59");
   const minuteStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "04:00");
