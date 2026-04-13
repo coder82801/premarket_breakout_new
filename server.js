@@ -263,7 +263,6 @@ function getDailyContext(dailyBars, tradeDate) {
 
   const prevBar = priorBars[priorBars.length - 1];
   const prev2Bar = priorBars[priorBars.length - 2];
-
   const priorDates = [...new Set(priorBars.map((b) => isoDateNY(b.t)))].slice(-20);
 
   return {
@@ -369,24 +368,24 @@ function scoreBreakoutCandidate(x) {
     notes.push("IEX feed");
   }
 
-  if (price >= 0.2 && price <= 10) {
+  if (price >= 0.2 && price <= 8) {
     score += 8;
-  } else if (price > 10 && price <= 20) {
+  } else if (price > 8 && price <= 20) {
     score += 4;
   } else if (price > 20) {
     score -= 4;
     notes.push("Fiyat yüksek, breakout verimi düşebilir");
   } else if (price < 0.2) {
-    score -= 8;
+    score -= 10;
     notes.push("Aşırı düşük fiyat");
   }
 
-  if (gapPct >= 2 && gapPct < 5) {
-    score += 8;
-  } else if (gapPct >= 5 && gapPct < 15) {
-    score += 14;
+  if (gapPct >= 1 && gapPct < 4) {
+    score += 6;
+  } else if (gapPct >= 4 && gapPct < 15) {
+    score += 16;
   } else if (gapPct >= 15 && gapPct < 35) {
-    score += 18;
+    score += 20;
   } else if (gapPct >= 35 && gapPct < 80) {
     score += 12;
     notes.push("Aşırı sıcak gap");
@@ -394,115 +393,146 @@ function scoreBreakoutCandidate(x) {
     score += 4;
     notes.push("Çok aşırı gap");
   } else if (gapPct < 0) {
-    score -= 10;
-  }
-
-  if (volRatio >= 1.2 && volRatio < 2) {
-    score += 10;
-  } else if (volRatio >= 2 && volRatio < 4) {
-    score += 18;
-  } else if (volRatio >= 4) {
-    score += 26;
-    notes.push("Hacim anomalisi güçlü");
-  } else if (volRatio < 0.8) {
     score -= 12;
   }
 
-  if (preDollarVol >= 100000 && preDollarVol < 500000) {
-    score += 8;
-  } else if (preDollarVol >= 500000 && preDollarVol < 2000000) {
-    score += 14;
-  } else if (preDollarVol >= 2000000) {
+  if (volRatio >= 0.8 && volRatio < 1.5) {
+    score += 10;
+  } else if (volRatio >= 1.5 && volRatio < 3) {
     score += 18;
-  } else if (preDollarVol < 50000) {
-    score -= 10;
+  } else if (volRatio >= 3) {
+    score += 26;
+    notes.push("Hacim anomalisi güçlü");
+  } else if (volRatio < 0.5) {
+    score -= 12;
+    notes.push("Hacim anomalisi zayıf");
+  }
+
+  if (preDollarVol >= 100000 && preDollarVol < 400000) {
+    score += 8;
+  } else if (preDollarVol >= 400000 && preDollarVol < 1500000) {
+    score += 14;
+  } else if (preDollarVol >= 1500000) {
+    score += 18;
+  } else if (preDollarVol < 75000) {
+    score -= 12;
     notes.push("Premarket dollar volume zayıf");
   }
 
-  if (hold >= 70 && hold < 85) {
-    score += 12;
-  } else if (hold >= 85) {
+  if (hold >= 85) {
     score += 18;
-  } else if (hold >= 55) {
+  } else if (hold >= 72) {
+    score += 12;
+  } else if (hold >= 60) {
     score += 6;
-  } else if (hold < 40) {
-    score -= 10;
+  } else if (hold < 45) {
+    score -= 12;
     notes.push("Premarket hold zayıf");
   }
 
   if (abovePreVWAP) {
-    score += 10;
+    score += 12;
   } else {
-    score -= 8;
+    score -= 12;
     notes.push("Premarket VWAP altında");
   }
 
   if (abovePrevHigh) {
-    score += 12;
+    score += 10;
     notes.push("Previous day high üstünde");
   }
 
   if (spreadBps == null) {
     notes.push("Spread unavailable");
-  } else if (spreadBps <= 60) {
-    score += 10;
-  } else if (spreadBps <= 120) {
-    score += 5;
-  } else if (spreadBps > 250) {
+  } else if (spreadBps <= 80) {
+    score += 8;
+  } else if (spreadBps <= 150) {
+    score += 4;
+  } else if (spreadBps > 300) {
     score -= 12;
     notes.push("Spread geniş");
   }
 
-  if (rangePct <= 12) {
-    score += 8;
-  } else if (rangePct <= 25) {
+  if (rangePct <= 20) {
     score += 4;
-  } else if (rangePct > 45) {
+  } else if (rangePct > 50) {
     score -= 8;
     notes.push("Premarket range aşırı geniş");
   }
 
-  if (prevCloseStrength >= 80) {
+  if (prevCloseStrength >= 85) {
     score += 6;
+  } else if (prevCloseStrength < 45) {
+    score -= 4;
   }
-  if (prevDayRet >= 5 && prevDayRet <= 40) {
+
+  if (prevDayRet >= 4 && prevDayRet <= 45) {
     score += 4;
-  } else if (prevDayRet > 70) {
+  } else if (prevDayRet > 90) {
     score -= 4;
     notes.push("Önceki gün aşırı uzama");
   }
 
   if (
     price <= 5 &&
-    gapPct >= 8 &&
-    volRatio >= 2 &&
+    gapPct >= 12 &&
+    hold >= 70 &&
+    preDollarVol >= 200000 &&
     abovePreVWAP
   ) {
-    score += 8;
+    score += 10;
     notes.push("Microcap catalyst uyumu");
   }
 
+  if (
+    prevDayRet >= 8 &&
+    prevDayRet <= 35 &&
+    prevCloseStrength >= 80
+  ) {
+    score += 6;
+    notes.push("Continuation kalitesi");
+  }
+
   score = clamp(Math.round(score), 0, 100);
+
+  const hardReject =
+    preDollarVol < 75000 ||
+    !abovePreVWAP ||
+    hold < 50 ||
+    (spreadBps != null && spreadBps > 400);
+
+  if (hardReject) {
+    return {
+      score,
+      decision: "ALMA",
+      notes,
+      quality: "LOW"
+    };
+  }
 
   let decision = "ALMA";
   let quality = "LOW";
 
   if (
-    score >= 78 &&
-    volRatio >= 2 &&
-    hold >= 70 &&
+    score >= 76 &&
+    hold >= 72 &&
     abovePreVWAP &&
-    abovePrevHigh &&
-    (spreadBps == null || spreadBps <= 180)
+    (
+      volRatio >= 1.5 ||
+      preDollarVol >= 750000
+    ) &&
+    (spreadBps == null || spreadBps <= 220)
   ) {
     decision = feed === "sip" ? "GÜÇLÜ AL" : "AL";
     quality = feed === "sip" ? "HIGH" : "MEDIUM";
   } else if (
-    score >= 62 &&
-    volRatio >= 1.2 &&
-    hold >= 55 &&
-    abovePreVWAP &&
-    (spreadBps == null || spreadBps <= 250)
+    score >= 60 &&
+    hold >= 60 &&
+    (
+      volRatio >= 0.8 ||
+      preDollarVol >= 250000
+    ) &&
+    (spreadBps == null || spreadBps <= 320)
   ) {
     decision = "AL";
     quality = "MEDIUM";
