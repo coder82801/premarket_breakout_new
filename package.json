@@ -1,7 +1,7 @@
 {
-  "name": "breakout-score-engine",
+  "name": "breakout-lite-architecture",
   "version": "1.0.0",
-  "description": "Premarket breakout score engine using Alpaca market data",
+  "description": "Low-cost breakout scanner using Alpaca IEX + two-stage scoring",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
