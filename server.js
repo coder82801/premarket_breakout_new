@@ -6,15 +6,14 @@ const PORT = process.env.PORT || 10000;
 
 const ALPACA_API_KEY = process.env.ALPACA_API_KEY || "";
 const ALPACA_SECRET_KEY = process.env.ALPACA_SECRET_KEY || "";
-const ALPACA_FEED = (process.env.ALPACA_FEED || "sip").toLowerCase();
+const ALPACA_FEED = (process.env.ALPACA_FEED || "iex").toLowerCase();
 
 app.use(express.json());
 app.use(express.static(__dirname));
 
 const DEFAULT_SYMBOLS = [
-  "ZNTL","RAYA","CUE","FUSE","CREG","SKYQ","SQFT","IPST","TPST","MAXN",
-  "GN","SIDU","RBBN","OGN","SPIR","LWLG","CVLT","AAOI","TTMI","ALAB",
-  "FSLY","DOCN","AKAM","NET","CRWD","SOUN","IONQ","RKLB","ACHR","JOBY"
+  "ZNTL","RAYA","CUE","FUSE","CREG","SKYQ",
+  "SQFT","IPST","TPST","MAXN","GN","SIDU"
 ];
 
 function safeNum(v, fallback = 0) {
@@ -138,6 +137,12 @@ function getSessionLabelNow() {
   return "closed";
 }
 
+function decisionRank(decision) {
+  if (decision === "GÜÇLÜ AL") return 3;
+  if (decision === "AL") return 2;
+  return 1;
+}
+
 async function alpacaGetJson(url) {
   if (!ALPACA_API_KEY || !ALPACA_SECRET_KEY) {
     throw new Error("ALPACA_API_KEY / ALPACA_SECRET_KEY eksik");
@@ -241,21 +246,6 @@ function computeVWAP(bars) {
 
 function getBarsForDate(allBars, dateStr) {
   return (allBars || []).filter((b) => isoDateNY(b.t) === dateStr);
-function splitPriorAndTradeDates(allBars, tradeDate) {
-  const prior = [];
-  const trade = [];
-
-  for (const b of allBars || []) {
-    const d = isoDateNY(b.t);
-    if (d === tradeDate) trade.push(b);
-    else if (d < tradeDate) prior.push(b);
-  }
-
-  return { prior, trade };
-}
-
-
-  
 }
 
 function filterBarsByTime(bars, startTime, endTime) {
@@ -265,15 +255,22 @@ function filterBarsByTime(bars, startTime, endTime) {
   });
 }
 
-function getPreviousTradingDates(dailyBars, tradeDate, count) {
-  const dates = dailyBars
-    .map((b) => isoDateNY(b.t))
-    .filter((d, idx, arr) => arr.indexOf(d) === idx)
-    .sort();
+function getDailyContext(dailyBars, tradeDate) {
+  const sorted = [...(dailyBars || [])].sort((a, b) => new Date(a.t) - new Date(b.t));
+  const priorBars = sorted.filter((b) => isoDateNY(b.t) < tradeDate);
 
-  const idx = dates.indexOf(tradeDate);
-  if (idx <= 0) return [];
-  return dates.slice(Math.max(0, idx - count), idx);
+  if (priorBars.length < 2) return null;
+
+  const prevBar = priorBars[priorBars.length - 1];
+  const prev2Bar = priorBars[priorBars.length - 2];
+
+  const priorDates = [...new Set(priorBars.map((b) => isoDateNY(b.t)))].slice(-20);
+
+  return {
+    prevBar,
+    prev2Bar,
+    priorDates
+  };
 }
 
 function computeCumulativePremarketVolumeForDate(minuteBars, dateStr, cutoffTime = "09:25:00") {
@@ -345,7 +342,7 @@ function scoreBreakoutCandidate(x) {
   const gapPct = safeNum(x.gapPct, 0);
   const volRatio = safeNum(x.preVolRatio, 0);
   const hold = safeNum(x.holdQuality, 0);
-  const spreadBps = safeNum(x.spreadBps, 99999);
+  const spreadBps = x.spreadBps == null ? null : safeNum(x.spreadBps, null);
   const rangePct = safeNum(x.preRangePct, 99999);
   const prevDayRet = safeNum(x.prevDayRet, 0);
   const prevCloseStrength = safeNum(x.prevCloseStrength, 0);
@@ -445,7 +442,9 @@ function scoreBreakoutCandidate(x) {
     notes.push("Previous day high üstünde");
   }
 
-  if (spreadBps <= 60) {
+  if (spreadBps == null) {
+    notes.push("Spread unavailable");
+  } else if (spreadBps <= 60) {
     score += 10;
   } else if (spreadBps <= 120) {
     score += 5;
@@ -477,8 +476,7 @@ function scoreBreakoutCandidate(x) {
     price <= 5 &&
     gapPct >= 8 &&
     volRatio >= 2 &&
-    abovePreVWAP &&
-    spreadBps <= 200
+    abovePreVWAP
   ) {
     score += 8;
     notes.push("Microcap catalyst uyumu");
@@ -495,7 +493,7 @@ function scoreBreakoutCandidate(x) {
     hold >= 70 &&
     abovePreVWAP &&
     abovePrevHigh &&
-    spreadBps <= 180
+    (spreadBps == null || spreadBps <= 180)
   ) {
     decision = feed === "sip" ? "GÜÇLÜ AL" : "AL";
     quality = feed === "sip" ? "HIGH" : "MEDIUM";
@@ -504,7 +502,7 @@ function scoreBreakoutCandidate(x) {
     volRatio >= 1.2 &&
     hold >= 55 &&
     abovePreVWAP &&
-    spreadBps <= 250
+    (spreadBps == null || spreadBps <= 250)
   ) {
     decision = "AL";
     quality = "MEDIUM";
@@ -522,12 +520,10 @@ function buildCandidateFromData({
   tradeDate,
   cutoffTime
 }) {
-  const tradeIdx = dailyBars.findIndex((b) => isoDateNY(b.t) === tradeDate);
-  if (tradeIdx < 2) return null;
+  const dailyCtx = getDailyContext(dailyBars, tradeDate);
+  if (!dailyCtx) return null;
 
-  const prevBar = dailyBars[tradeIdx - 1];
-  const prev2Bar = dailyBars[tradeIdx - 2];
-  const priorDates = getPreviousTradingDates(dailyBars, tradeDate, 20);
+  const { prevBar, prev2Bar, priorDates } = dailyCtx;
 
   const prevClose = safeNum(prevBar.c, 0);
   const prevHigh = safeNum(prevBar.h, 0);
@@ -584,7 +580,7 @@ function buildCandidateFromData({
     feed
   });
 
-  const row = {
+  return {
     symbol,
     feed,
     source: preCtx.source,
@@ -618,12 +614,10 @@ function buildCandidateFromData({
     samples: baseline.samples,
     abovePrevHigh
   };
-
-  return row;
 }
 
-function buildBacktestOutcome(minuteBars, tradeDate, preLast) {
-  const dayBars = getBarsForDate(minuteBars, tradeDate);
+function buildBacktestOutcome(tradeDayMinuteBars, tradeDate, preLast) {
+  const dayBars = getBarsForDate(tradeDayMinuteBars, tradeDate);
   const openBars = filterBarsByTime(dayBars, "09:30:00", "10:00:00");
   if (!openBars.length) {
     return {
@@ -648,10 +642,13 @@ function buildBacktestOutcome(minuteBars, tradeDate, preLast) {
 }
 
 function summarizeBreakout(rows) {
-  const picks = rows.filter((r) => r.decision === "GÜÇLÜ AL" || r.decision === "AL").slice(0, 3);
+  const picks = rows
+    .filter((r) => r.decision === "GÜÇLÜ AL" || r.decision === "AL")
+    .slice(0, 3);
+
   const vals = picks
-    .map((r) => safeNum(r.realizedPremarketTo30HighPct, null))
-    .filter((v) => v != null);
+    .map((r) => (r.realizedPremarketTo30HighPct == null ? null : Number(r.realizedPremarketTo30HighPct)))
+    .filter((v) => v != null && Number.isFinite(v));
 
   return {
     total: rows.length,
@@ -666,33 +663,52 @@ function summarizeBreakout(rows) {
 
 async function buildBacktestBreakout(dateStr, symbols) {
   const lookbackStart = new Date(new Date(dateStr).getTime() - 12 * 86400000);
-  const dailyStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "00:00");
-  const dailyEnd = zonedDateTimeToUtcISO(dateStr, "23:59");
-  const minuteStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "04:00");
-  const minuteEnd = zonedDateTimeToUtcISO(dateStr, "10:00");
 
-  const [snapshotsRaw, dailyBarsMap, minuteBarsMap] = await Promise.all([
-    fetchSnapshots(symbols, ALPACA_FEED),
+  const dailyStart = zonedDateTimeToUtcISO(
+    lookbackStart.toISOString().slice(0, 10),
+    "00:00"
+  );
+  const dailyEnd = zonedDateTimeToUtcISO(dateStr, "23:59");
+
+  const priorMinuteStart = zonedDateTimeToUtcISO(
+    lookbackStart.toISOString().slice(0, 10),
+    "04:00"
+  );
+  const priorMinuteEnd = zonedDateTimeToUtcISO(dateStr, "03:59");
+
+  const tradeMinuteStart = zonedDateTimeToUtcISO(dateStr, "04:00");
+  const tradeMinuteEnd = zonedDateTimeToUtcISO(dateStr, "10:00");
+
+  const [dailyBarsMap, prior5MinMap, trade1MinMap] = await Promise.all([
     fetchAllBars(symbols, "1Day", dailyStart, dailyEnd, ALPACA_FEED, 10000),
-    fetchAllBars(symbols, "1Min", minuteStart, minuteEnd, ALPACA_FEED, 10000)
+    fetchAllBars(symbols, "5Min", priorMinuteStart, priorMinuteEnd, ALPACA_FEED, 10000),
+    fetchAllBars(symbols, "1Min", tradeMinuteStart, tradeMinuteEnd, ALPACA_FEED, 10000)
   ]);
 
   const rows = [];
 
   for (const symbol of symbols) {
+    const dailyBars = dailyBarsMap[symbol] || [];
+    const prior5 = prior5MinMap[symbol] || [];
+    const trade1 = trade1MinMap[symbol] || [];
+    const mergedMinuteBars = [...prior5, ...trade1].sort(
+      (a, b) => new Date(a.t) - new Date(b.t)
+    );
+
     const row = buildCandidateFromData({
       symbol,
       feed: ALPACA_FEED,
-      snapshot: snapshotsRaw[symbol] || {},
-      dailyBars: dailyBarsMap[symbol] || [],
-      minuteBars: minuteBarsMap[symbol] || [],
+      snapshot: null,
+      dailyBars,
+      minuteBars: mergedMinuteBars,
       tradeDate: dateStr,
       cutoffTime: "09:25:00"
     });
 
     if (!row) continue;
 
-    const outcome = buildBacktestOutcome(minuteBarsMap[symbol] || [], dateStr, row.price);
+    const outcome = buildBacktestOutcome(trade1, dateStr, row.price);
+
     rows.push({
       ...row,
       realizedPremarketTo30HighPct: outcome.realizedPremarketTo30HighPct,
@@ -701,8 +717,16 @@ async function buildBacktestBreakout(dateStr, symbols) {
   }
 
   rows.sort((a, b) => {
-    const aKey = decisionRank(a.decision) * 100000 + safeNum(a.score, 0) * 100 + safeNum(a.preVolRatio, 0);
-    const bKey = decisionRank(b.decision) * 100000 + safeNum(b.score, 0) * 100 + safeNum(b.preVolRatio, 0);
+    const aKey =
+      decisionRank(a.decision) * 100000 +
+      safeNum(a.score, 0) * 100 +
+      safeNum(a.preVolRatio, 0);
+
+    const bKey =
+      decisionRank(b.decision) * 100000 +
+      safeNum(b.score, 0) * 100 +
+      safeNum(b.preVolRatio, 0);
+
     return bKey - aKey;
   });
 
@@ -744,34 +768,53 @@ async function buildLiveBreakout(symbols) {
 
   const nowNy = getNowNyTime();
   let cutoffTime = "09:25:00";
+
   if (session === "premarket") {
     cutoffTime = nowNy < "04:00:00" ? "04:00:00" : (nowNy > "09:25:00" ? "09:25:00" : nowNy);
-  }
-  if (session === "open" || session === "afterhours") {
+  } else {
     cutoffTime = "09:25:00";
   }
 
-  const lookbackStart = new Date(Date.now() - 45 * 86400000);
-  const dailyStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "00:00");
-  const dailyEnd = new Date().toISOString();
-  const minuteStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "04:00");
-  const minuteEnd = new Date().toISOString();
+  const lookbackStart = new Date(Date.now() - 12 * 86400000);
 
-  const [snapshotsRaw, dailyBarsMap, minuteBarsMap] = await Promise.all([
+  const dailyStart = zonedDateTimeToUtcISO(
+    lookbackStart.toISOString().slice(0, 10),
+    "00:00"
+  );
+  const dailyEnd = new Date().toISOString();
+
+  const priorMinuteStart = zonedDateTimeToUtcISO(
+    lookbackStart.toISOString().slice(0, 10),
+    "04:00"
+  );
+  const priorMinuteEnd = zonedDateTimeToUtcISO(today, "03:59");
+
+  const tradeMinuteStart = zonedDateTimeToUtcISO(today, "04:00");
+  const tradeMinuteEnd = new Date().toISOString();
+
+  const [snapshotsRaw, dailyBarsMap, prior5MinMap, trade1MinMap] = await Promise.all([
     fetchSnapshots(symbols, ALPACA_FEED),
     fetchAllBars(symbols, "1Day", dailyStart, dailyEnd, ALPACA_FEED, 10000),
-    fetchAllBars(symbols, "1Min", minuteStart, minuteEnd, ALPACA_FEED, 10000)
+    fetchAllBars(symbols, "5Min", priorMinuteStart, priorMinuteEnd, ALPACA_FEED, 10000),
+    fetchAllBars(symbols, "1Min", tradeMinuteStart, tradeMinuteEnd, ALPACA_FEED, 10000)
   ]);
 
   const rows = [];
 
   for (const symbol of symbols) {
+    const dailyBars = dailyBarsMap[symbol] || [];
+    const prior5 = prior5MinMap[symbol] || [];
+    const trade1 = trade1MinMap[symbol] || [];
+    const mergedMinuteBars = [...prior5, ...trade1].sort(
+      (a, b) => new Date(a.t) - new Date(b.t)
+    );
+
     const row = buildCandidateFromData({
       symbol,
       feed: ALPACA_FEED,
       snapshot: snapshotsRaw[symbol] || {},
-      dailyBars: dailyBarsMap[symbol] || [],
-      minuteBars: minuteBarsMap[symbol] || [],
+      dailyBars,
+      minuteBars: mergedMinuteBars,
       tradeDate: today,
       cutoffTime
     });
@@ -781,8 +824,16 @@ async function buildLiveBreakout(symbols) {
   }
 
   rows.sort((a, b) => {
-    const aKey = decisionRank(a.decision) * 100000 + safeNum(a.score, 0) * 100 + safeNum(a.preVolRatio, 0);
-    const bKey = decisionRank(b.decision) * 100000 + safeNum(b.score, 0) * 100 + safeNum(b.preVolRatio, 0);
+    const aKey =
+      decisionRank(a.decision) * 100000 +
+      safeNum(a.score, 0) * 100 +
+      safeNum(a.preVolRatio, 0);
+
+    const bKey =
+      decisionRank(b.decision) * 100000 +
+      safeNum(b.score, 0) * 100 +
+      safeNum(b.preVolRatio, 0);
+
     return bKey - aKey;
   });
 
@@ -833,6 +884,10 @@ app.get("/api/backtest-breakout", async (req, res) => {
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.use((req, res) => {
+  res.status(404).send(`Route not found: ${req.method} ${req.originalUrl}`);
 });
 
 app.listen(PORT, () => {
