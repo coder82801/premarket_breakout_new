@@ -203,12 +203,12 @@
         <br>
         Amaç kusursuz dip yakalamak değil; dar watchlist içinde hareketin teyitli başlangıcını bulmak.
         <br>
-        <b>İEX</b> ile çalışacak şekilde tasarlandı. `İZLE`, veri eksikliği altında gece shortlist mantığını korur.
+        <b>IEX</b> ile çalışacak şekilde tasarlandı. “İZLE”, veri eksikliği altında gece shortlist mantığını korur.
       </div>
 
       <div class="tabs">
-        <button class="tab active" data-tab="live">Canlı Tarama</button>
-        <button class="tab" data-tab="backtest">Backtest</button>
+        <button class="tab active" data-tab="live" type="button">Canlı Tarama</button>
+        <button class="tab" data-tab="backtest" type="button">Backtest</button>
       </div>
     </div>
 
@@ -217,25 +217,25 @@
         <h2>Canlı Lite Tarama</h2>
         <div class="grid">
           <div class="field full">
-            <label>Sembol listesi</label>
+            <label for="liveSymbols">Sembol listesi</label>
             <textarea id="liveSymbols"></textarea>
           </div>
           <div class="field">
-            <label>Session</label>
+            <label for="liveSession">Session</label>
             <input id="liveSession" disabled />
           </div>
           <div class="field">
-            <label>Feed</label>
+            <label for="liveFeed">Feed</label>
             <input id="liveFeed" disabled />
           </div>
           <div class="field">
-            <label>Cutoff</label>
+            <label for="liveCutoff">Cutoff</label>
             <input id="liveCutoff" disabled />
           </div>
         </div>
 
-        <button id="btnLoadDefaults">Varsayılan listeyi yükle</button>
-        <button id="btnLive">Canlı tarama başlat</button>
+        <button id="btnLoadDefaults" type="button">Varsayılan listeyi yükle</button>
+        <button id="btnLive" type="button">Canlı tarama başlat</button>
 
         <div id="liveStatus" class="status muted">Hazır.</div>
         <div id="liveSummary" class="chips"></div>
@@ -287,17 +287,17 @@
         <h2>Backtest Lite</h2>
         <div class="grid">
           <div class="field">
-            <label>Tarih</label>
+            <label for="btDate">Tarih</label>
             <input id="btDate" type="date" />
           </div>
           <div class="field full">
-            <label>Sembol listesi</label>
+            <label for="btSymbols">Sembol listesi</label>
             <textarea id="btSymbols"></textarea>
           </div>
         </div>
 
-        <button id="btnBtDefaults">Varsayılan listeyi yükle</button>
-        <button id="btnBacktest">Backtest çalıştır</button>
+        <button id="btnBtDefaults" type="button">Varsayılan listeyi yükle</button>
+        <button id="btnBacktest" type="button">Backtest çalıştır</button>
 
         <div id="btStatus" class="status muted">Hazır.</div>
         <div id="btSummary" class="chips"></div>
@@ -349,7 +349,7 @@
     function parseSymbols(text) {
       return String(text || "")
         .split(",")
-        .map(x => x.trim().toUpperCase())
+        .map((x) => x.trim().toUpperCase())
         .filter(Boolean);
     }
 
@@ -385,7 +385,7 @@
     function renderTop(containerId, rows) {
       const wrap = document.getElementById(containerId);
       const picks = (rows || [])
-        .filter(r => ["GÜÇLÜ AL","AL","İZLE"].includes(r.decision))
+        .filter((r) => ["GÜÇLÜ AL", "AL", "İZLE"].includes(r.decision))
         .slice(0, 3);
 
       if (!picks.length) {
@@ -436,7 +436,7 @@
         return;
       }
 
-      tbody.innerHTML = rows.map(x => `
+      tbody.innerHTML = rows.map((x) => `
         <tr>
           <td class="${decisionClass(x.decision)}">${x.decision}</td>
           <td>${fmt(x.nightlyScore, 0)}</td>
@@ -485,7 +485,7 @@
         return;
       }
 
-      tbody.innerHTML = rows.map(x => `
+      tbody.innerHTML = rows.map((x) => `
         <tr>
           <td class="${decisionClass(x.decision)}">${x.decision}</td>
           <td>${fmt(x.nightlyScore, 0)}</td>
@@ -529,9 +529,15 @@
         setStatus("btStatus", "Backtest çalışıyor...", "warn");
         const date = document.getElementById("btDate").value;
         const symbols = parseSymbols(document.getElementById("btSymbols").value);
-        if (!date) throw new Error("Tarih seç.");
 
-        const data = await apiJson(`/api/backtest-lite?date=${encodeURIComponent(date)}&symbols=${encodeURIComponent(symbols.join(","))}`);
+        if (!date) {
+          throw new Error("Tarih seç.");
+        }
+
+        const data = await apiJson(
+          `/api/backtest-lite?date=${encodeURIComponent(date)}&symbols=${encodeURIComponent(symbols.join(","))}`
+        );
+
         renderBacktest(data);
         setStatus("btStatus", "Backtest tamamlandı.", "ok");
       } catch (err) {
@@ -541,10 +547,10 @@
     }
 
     function initTabs() {
-      document.querySelectorAll(".tab").forEach(btn => {
+      document.querySelectorAll(".tab").forEach((btn) => {
         btn.addEventListener("click", () => {
-          document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
-          document.querySelectorAll(".panel").forEach(x => x.classList.remove("active"));
+          document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+          document.querySelectorAll(".panel").forEach((x) => x.classList.remove("active"));
           btn.classList.add("active");
           document.getElementById(`panel-${btn.dataset.tab}`).classList.add("active");
         });
@@ -561,7 +567,7 @@
 
     document.getElementById("btnLoadDefaults").addEventListener("click", loadDefaults);
     document.getElementById("btnBtDefaults").addEventListener("click", loadDefaults);
-    document.getElementById("btnLive").addEventListener("click",EventListener("click",EventListener("click", runLive);
+    document.getElementById("btnLive").addEventListener("click", runLive);
     document.getElementById("btnBacktest").addEventListener("click", runBacktest);
 
     (async function boot() {
@@ -569,7 +575,6 @@
       setDefaultDate();
       try {
         const health = await apiJson("/test");
- await apiJson("/test");
         await loadDefaults();
         setStatus("liveStatus", health.status || "Hazır.", "ok");
         setStatus("btStatus", health.status || "Hazır.", "ok");
