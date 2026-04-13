@@ -773,6 +773,7 @@ async function buildBacktestBreakout(dateStr, symbols) {
 async function buildLiveBreakout(symbols) {
   const session = getSessionLabelNow();
   const today = getTodayNyDate();
+  const nowNy = getNowNyTime();
 
   if (session === "weekend") {
     return {
@@ -796,38 +797,74 @@ async function buildLiveBreakout(symbols) {
     };
   }
 
-  const nowNy = getNowNyTime();
-  let cutoffTime = "09:25:00";
+  // ekstra güvenlik: NY saati 04:00'tan önce canlı breakout minute isteği atma
+  if (nowNy < "04:00:00") {
+    return {
+      session,
+      feed: ALPACA_FEED,
+      cutoffTime: null,
+      rows: [],
+      summary: { total: 0, picks: 0, strong: 0, buy: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
+      message: "Premarket henüz başlamadı. 04:00 ET sonrası tekrar dene."
+    };
+  }
 
+  let cutoffTime = "09:25:00";
   if (session === "premarket") {
-    cutoffTime = nowNy < "04:00:00" ? "04:00:00" : (nowNy > "09:25:00" ? "09:25:00" : nowNy);
+    cutoffTime = nowNy > "09:25:00" ? "09:25:00" : nowNy;
   } else {
     cutoffTime = "09:25:00";
   }
 
   const lookbackStart = new Date(Date.now() - 12 * 86400000);
+  const lookbackDateStr = lookbackStart.toISOString().slice(0, 10);
 
-  const dailyStart = zonedDateTimeToUtcISO(
-    lookbackStart.toISOString().slice(0, 10),
-    "00:00"
-  );
+  const dailyStart = zonedDateTimeToUtcISO(lookbackDateStr, "00:00");
   const dailyEnd = new Date().toISOString();
 
-  const priorMinuteStart = zonedDateTimeToUtcISO(
-    lookbackStart.toISOString().slice(0, 10),
-    "04:00"
-  );
+  const priorMinuteStart = zonedDateTimeToUtcISO(lookbackDateStr, "04:00");
   const priorMinuteEnd = zonedDateTimeToUtcISO(today, "03:59");
 
   const tradeMinuteStart = zonedDateTimeToUtcISO(today, "04:00");
   const tradeMinuteEnd = new Date().toISOString();
 
-  const [snapshotsRaw, dailyBarsMap, prior5MinMap, trade1MinMap] = await Promise.all([
+  const priorStartMs = new Date(priorMinuteStart).getTime();
+  const priorEndMs = new Date(priorMinuteEnd).getTime();
+  const tradeStartMs = new Date(tradeMinuteStart).getTime();
+  const tradeEndMs = new Date(tradeMinuteEnd).getTime();
+
+  // geçmiş baseline için pencere geçersizse boş map kullan
+  let prior5MinMap = {};
+  for (const s of symbols) prior5MinMap[s] = [];
+
+  // trade penceresi geçersizse canlı tarama üretme
+  if (!(tradeEndMs > tradeStartMs)) {
+    return {
+      session,
+      feed: ALPACA_FEED,
+      cutoffTime,
+      rows: [],
+      summary: { total: 0, picks: 0, strong: 0, buy: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
+      message: "Trade minute penceresi henüz oluşmadı. Birkaç dakika sonra tekrar dene."
+    };
+  }
+
+  const [snapshotsRaw, dailyBarsMap, trade1MinMap] = await Promise.all([
     fetchSnapshots(symbols, ALPACA_FEED),
     fetchAllBars(symbols, "1Day", dailyStart, dailyEnd, ALPACA_FEED, 10000),
-    fetchAllBars(symbols, "5Min", priorMinuteStart, priorMinuteEnd, ALPACA_FEED, 10000),
     fetchAllBars(symbols, "1Min", tradeMinuteStart, tradeMinuteEnd, ALPACA_FEED, 10000)
   ]);
+
+  if (priorEndMs > priorStartMs) {
+    prior5MinMap = await fetchAllBars(
+      symbols,
+      "5Min",
+      priorMinuteStart,
+      priorMinuteEnd,
+      ALPACA_FEED,
+      10000
+    );
+  }
 
   const rows = [];
 
@@ -835,6 +872,7 @@ async function buildLiveBreakout(symbols) {
     const dailyBars = dailyBarsMap[symbol] || [];
     const prior5 = prior5MinMap[symbol] || [];
     const trade1 = trade1MinMap[symbol] || [];
+
     const mergedMinuteBars = [...prior5, ...trade1].sort(
       (a, b) => new Date(a.t) - new Date(b.t)
     );
