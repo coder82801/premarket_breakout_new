@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Breakout Score Engine</title>
+  <title>Breakout Lite Engine</title>
   <style>
     :root{
       --bg:#07111f;
@@ -15,6 +15,7 @@
       --yellow:#e6b44a;
       --red:#ff7c7c;
       --blue:#57b1ff;
+      --watch:#c49bff;
     }
     *{box-sizing:border-box}
     body{
@@ -139,6 +140,7 @@
     }
     .strong{background:rgba(32,211,155,.14);color:var(--green);border:1px solid rgba(32,211,155,.35)}
     .buy{background:rgba(230,180,74,.14);color:var(--yellow);border:1px solid rgba(230,180,74,.35)}
+    .watch{background:rgba(196,155,255,.14);color:var(--watch);border:1px solid rgba(196,155,255,.35)}
     .no{background:rgba(255,124,124,.14);color:var(--red);border:1px solid rgba(255,124,124,.35)}
     .kv{
       display:grid;
@@ -181,6 +183,7 @@
     }
     .decision-strong{color:var(--green);font-weight:800}
     .decision-buy{color:var(--yellow);font-weight:800}
+    .decision-watch{color:var(--watch);font-weight:800}
     .decision-no{color:var(--red);font-weight:800}
     @media (max-width:1100px){
       .topcards{grid-template-columns:1fr}
@@ -194,11 +197,13 @@
 <body>
   <div class="wrap">
     <div class="card">
-      <h1>⚡ Breakout Score Engine</h1>
+      <h1>⚡ Breakout Lite Engine</h1>
       <div class="sub">
-        Gerçek premarket hacim anomalisi + premarket VWAP + hold quality + spread + previous day quality.
+        Düşük maliyetli veri mimarisi: <b>Nightly Score + Premarket Confirm</b>.
         <br>
-        Proxy veriden <b>GÜÇLÜ AL</b> üretmez. Amaç: hareket eden motorun erken ama teyitli evresine binmek.
+        Amaç kusursuz dip yakalamak değil; dar watchlist içinde hareketin teyitli başlangıcını bulmak.
+        <br>
+        <b>İEX</b> ile çalışacak şekilde tasarlandı. `İZLE`, veri eksikliği altında gece shortlist mantığını korur.
       </div>
 
       <div class="tabs">
@@ -209,7 +214,7 @@
 
     <div id="panel-live" class="panel active">
       <div class="card">
-        <h2>Canlı Breakout Tarama</h2>
+        <h2>Canlı Lite Tarama</h2>
         <div class="grid">
           <div class="field full">
             <label>Sembol listesi</label>
@@ -237,7 +242,7 @@
       </div>
 
       <div class="card">
-        <h2>Top 3 Breakout Adayı</h2>
+        <h2>Top 3</h2>
         <div id="liveTop" class="topcards">
           <div class="muted">Henüz veri yok.</div>
         </div>
@@ -250,20 +255,20 @@
             <thead>
               <tr>
                 <th>Decision</th>
-                <th>Score</th>
+                <th>Nightly</th>
+                <th>Premkt</th>
                 <th>Symbol</th>
                 <th>Source</th>
                 <th>Price</th>
                 <th>Gap %</th>
                 <th>Pre Vol</th>
-                <th>Vol Baseline</th>
+                <th>Baseline</th>
                 <th>Vol Ratio</th>
                 <th>Premkt VWAP</th>
                 <th>Above VWAP</th>
                 <th>Hold</th>
-                <th>Range %</th>
                 <th>Prev Day %</th>
-                <th>Close Strength</th>
+                <th>Prev Close Strength</th>
                 <th>Spread bps</th>
                 <th>Above Prev High</th>
                 <th>Notes</th>
@@ -279,7 +284,7 @@
 
     <div id="panel-backtest" class="panel">
       <div class="card">
-        <h2>Backtest Breakout</h2>
+        <h2>Backtest Lite</h2>
         <div class="grid">
           <div class="field">
             <label>Tarih</label>
@@ -312,7 +317,8 @@
             <thead>
               <tr>
                 <th>Decision</th>
-                <th>Score</th>
+                <th>Nightly</th>
+                <th>Premkt</th>
                 <th>Symbol</th>
                 <th>Source</th>
                 <th>Price</th>
@@ -320,15 +326,13 @@
                 <th>Vol Ratio</th>
                 <th>Hold</th>
                 <th>Prev Day %</th>
-                <th>Close Strength</th>
-                <th>Spread bps</th>
                 <th>Premkt→30m High %</th>
                 <th>Open→30m High %</th>
                 <th>Notes</th>
               </tr>
             </thead>
             <tbody id="btRows">
-              <tr><td colspan="14" class="muted">Henüz backtest yapılmadı.</td></tr>
+              <tr><td colspan="13" class="muted">Henüz backtest yapılmadı.</td></tr>
             </tbody>
           </table>
         </div>
@@ -337,26 +341,9 @@
   </div>
 
   <script>
-    function num(v, fallback = 0) {
-      const n = Number(v);
-      return Number.isFinite(n) ? n : fallback;
-    }
-
     function fmt(v, d = 2) {
       const n = Number(v);
       return Number.isFinite(n) ? n.toFixed(d) : "-";
-    }
-
-    function decisionClass(decision) {
-      if (decision === "GÜÇLÜ AL") return "decision-strong";
-      if (decision === "AL") return "decision-buy";
-      return "decision-no";
-    }
-
-    function badge(decision) {
-      if (decision === "GÜÇLÜ AL") return "badge strong";
-      if (decision === "AL") return "badge buy";
-      return "badge no";
     }
 
     function parseSymbols(text) {
@@ -381,9 +368,25 @@
       el.textContent = text;
     }
 
+    function decisionClass(decision) {
+      if (decision === "GÜÇLÜ AL") return "decision-strong";
+      if (decision === "AL") return "decision-buy";
+      if (decision === "İZLE") return "decision-watch";
+      return "decision-no";
+    }
+
+    function badge(decision) {
+      if (decision === "GÜÇLÜ AL") return "badge strong";
+      if (decision === "AL") return "badge buy";
+      if (decision === "İZLE") return "badge watch";
+      return "badge no";
+    }
+
     function renderTop(containerId, rows) {
       const wrap = document.getElementById(containerId);
-      const picks = (rows || []).filter(r => r.decision === "GÜÇLÜ AL" || r.decision === "AL").slice(0, 3);
+      const picks = (rows || [])
+        .filter(r => ["GÜÇLÜ AL","AL","İZLE"].includes(r.decision))
+        .slice(0, 3);
 
       if (!picks.length) {
         wrap.innerHTML = `<div class="muted">Aday çıkmadı.</div>`;
@@ -396,14 +399,14 @@
           <div class="${badge(x.decision)}">${x.decision}</div>
 
           <div class="kv">
-            <div><span class="k">Score</span>${fmt(x.score, 0)}</div>
-            <div><span class="k">Source</span>${x.source || "-"}</div>
+            <div><span class="k">Nightly</span>${fmt(x.nightlyScore, 0)}</div>
+            <div><span class="k">Premkt</span>${fmt(x.premarketScore, 0)}</div>
             <div><span class="k">Price</span>${x.price == null ? "-" : fmt(x.price, x.price < 1 ? 4 : 2)}</div>
             <div><span class="k">Gap %</span>${fmt(x.gapPct, 2)}</div>
             <div><span class="k">Vol Ratio</span>${fmt(x.preVolRatio, 2)}</div>
             <div><span class="k">Hold</span>${fmt(x.holdQuality, 1)}</div>
             <div><span class="k">VWAP</span>${x.preVWAP == null ? "-" : fmt(x.preVWAP, x.preVWAP < 1 ? 4 : 2)}</div>
-            <div><span class="k">Spread bps</span>${fmt(x.spreadBps, 1)}</div>
+            <div><span class="k">Source</span>${x.source || "-"}</div>
           </div>
         </div>
       `).join("");
@@ -419,7 +422,8 @@
         <div class="chip">Toplam: <b>${s.total ?? 0}</b></div>
         <div class="chip">GÜÇLÜ AL: <b>${s.strong ?? 0}</b></div>
         <div class="chip">AL: <b>${s.buy ?? 0}</b></div>
-        <div class="chip">Top Picks: <b>${s.picks ?? 0}</b></div>
+        <div class="chip">İZLE: <b>${s.watch ?? 0}</b></div>
+        <div class="chip">Top Picks: <b>${s.topPicks ?? 0}</b></div>
       `;
 
       renderTop("liveTop", data.rows || []);
@@ -435,7 +439,8 @@
       tbody.innerHTML = rows.map(x => `
         <tr>
           <td class="${decisionClass(x.decision)}">${x.decision}</td>
-          <td>${fmt(x.score, 0)}</td>
+          <td>${fmt(x.nightlyScore, 0)}</td>
+          <td>${fmt(x.premarketScore, 0)}</td>
           <td><b>${x.symbol}</b></td>
           <td>${x.source || "-"}</td>
           <td>${x.price == null ? "-" : fmt(x.price, x.price < 1 ? 4 : 2)}</td>
@@ -446,7 +451,6 @@
           <td>${x.preVWAP == null ? "-" : fmt(x.preVWAP, x.preVWAP < 1 ? 4 : 2)}</td>
           <td>${x.abovePreVWAP ? "YES" : "NO"}</td>
           <td>${fmt(x.holdQuality, 1)}</td>
-          <td>${fmt(x.preRangePct, 2)}</td>
           <td>${fmt(x.prevDayRet, 2)}</td>
           <td>${fmt(x.prevCloseStrength, 1)}</td>
           <td>${fmt(x.spreadBps, 1)}</td>
@@ -462,9 +466,10 @@
         <div class="chip">Trade Date: <b>${data.tradeDate || "-"}</b></div>
         <div class="chip">Feed: <b>${data.feed || "-"}</b></div>
         <div class="chip">Toplam: <b>${s.total ?? 0}</b></div>
-        <div class="chip">Picks: <b>${s.picks ?? 0}</b></div>
         <div class="chip">GÜÇLÜ AL: <b>${s.strong ?? 0}</b></div>
         <div class="chip">AL: <b>${s.buy ?? 0}</b></div>
+        <div class="chip">İZLE: <b>${s.watch ?? 0}</b></div>
+        <div class="chip">Top Picks: <b>${s.topPicks ?? 0}</b></div>
         <div class="chip">Premkt→30m Avg: <b>${s.avgPremarketTo30 == null ? "-" : fmt(s.avgPremarketTo30, 2)}%</b></div>
         <div class="chip">Hit +10: <b>${s.hit10 ?? 0}</b></div>
         <div class="chip">Hit +15: <b>${s.hit15 ?? 0}</b></div>
@@ -476,14 +481,15 @@
       const rows = data.rows || [];
 
       if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="14" class="muted">Sonuç bulunamadı.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="13" class="muted">Sonuç bulunamadı.</td></tr>`;
         return;
       }
 
       tbody.innerHTML = rows.map(x => `
         <tr>
           <td class="${decisionClass(x.decision)}">${x.decision}</td>
-          <td>${fmt(x.score, 0)}</td>
+          <td>${fmt(x.nightlyScore, 0)}</td>
+          <td>${fmt(x.premarketScore, 0)}</td>
           <td><b>${x.symbol}</b></td>
           <td>${x.source || "-"}</td>
           <td>${x.price == null ? "-" : fmt(x.price, x.price < 1 ? 4 : 2)}</td>
@@ -491,8 +497,6 @@
           <td>${fmt(x.preVolRatio, 2)}</td>
           <td>${fmt(x.holdQuality, 1)}</td>
           <td>${fmt(x.prevDayRet, 2)}</td>
-          <td>${fmt(x.prevCloseStrength, 1)}</td>
-          <td>${fmt(x.spreadBps, 1)}</td>
           <td>${x.realizedPremarketTo30HighPct == null ? "-" : fmt(x.realizedPremarketTo30HighPct, 2)}</td>
           <td>${x.realizedOpenTo30HighPct == null ? "-" : fmt(x.realizedOpenTo30HighPct, 2)}</td>
           <td style="text-align:left;white-space:normal;min-width:280px">${x.notes || ""}</td>
@@ -511,7 +515,7 @@
       try {
         setStatus("liveStatus", "Canlı tarama çalışıyor...", "warn");
         const symbols = parseSymbols(document.getElementById("liveSymbols").value);
-        const data = await apiJson(`/api/live-breakout?symbols=${encodeURIComponent(symbols.join(","))}`);
+        const data = await apiJson(`/api/live-lite?symbols=${encodeURIComponent(symbols.join(","))}`);
         renderLive(data);
         setStatus("liveStatus", data.message ? data.message : "Canlı tarama tamamlandı.", data.message ? "warn" : "ok");
       } catch (err) {
@@ -527,7 +531,7 @@
         const symbols = parseSymbols(document.getElementById("btSymbols").value);
         if (!date) throw new Error("Tarih seç.");
 
-        const data = await apiJson(`/api/backtest-breakout?date=${encodeURIComponent(date)}&symbols=${encodeURIComponent(symbols.join(","))}`);
+        const data = await apiJson(`/api/backtest-lite?date=${encodeURIComponent(date)}&symbols=${encodeURIComponent(symbols.join(","))}`);
         renderBacktest(data);
         setStatus("btStatus", "Backtest tamamlandı.", "ok");
       } catch (err) {
@@ -557,17 +561,18 @@
 
     document.getElementById("btnLoadDefaults").addEventListener("click", loadDefaults);
     document.getElementById("btnBtDefaults").addEventListener("click", loadDefaults);
-    document.getElementById("btnLive").addEventListener("click", runLive);
+    document.getElementById("btnLive").addEventListener("click",EventListener("click",EventListener("click", runLive);
     document.getElementById("btnBacktest").addEventListener("click", runBacktest);
 
     (async function boot() {
       initTabs();
       setDefaultDate();
       try {
+        const health = await apiJson("/test");
+ await apiJson("/test");
         await loadDefaults();
-        await apiJson("/test");
-        setStatus("liveStatus", "Hazır.", "ok");
-        setStatus("btStatus", "Hazır.", "ok");
+        setStatus("liveStatus", health.status || "Hazır.", "ok");
+        setStatus("btStatus", health.status || "Hazır.", "ok");
       } catch (err) {
         console.error(err);
         setStatus("liveStatus", "Sunucu bağlantısı kurulamadı.", "bad");
