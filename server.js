@@ -13,7 +13,8 @@ app.use(express.static(__dirname));
 
 const DEFAULT_SYMBOLS = [
   "ZNTL","RAYA","CUE","FUSE","CREG","SKYQ",
-  "SQFT","IPST","TPST","MAXN","GN","SIDU"
+  "SQFT","IPST","TPST","MAXN","GN","SIDU",
+  "RBBN","OGN","SPIR","LWLG","AAOI","TTMI","ALAB"
 ];
 
 function safeNum(v, fallback = 0) {
@@ -138,8 +139,9 @@ function getSessionLabelNow() {
 }
 
 function decisionRank(decision) {
-  if (decision === "GÜÇLÜ AL") return 3;
-  if (decision === "AL") return 2;
+  if (decision === "GÜÇLÜ AL") return 4;
+  if (decision === "AL") return 3;
+  if (decision === "İZLE") return 2;
   return 1;
 }
 
@@ -258,16 +260,18 @@ function filterBarsByTime(bars, startTime, endTime) {
 function getDailyContext(dailyBars, tradeDate) {
   const sorted = [...(dailyBars || [])].sort((a, b) => new Date(a.t) - new Date(b.t));
   const priorBars = sorted.filter((b) => isoDateNY(b.t) < tradeDate);
-
-  if (priorBars.length < 2) return null;
+  if (priorBars.length < 3) return null;
 
   const prevBar = priorBars[priorBars.length - 1];
   const prev2Bar = priorBars[priorBars.length - 2];
-  const priorDates = [...new Set(priorBars.map((b) => isoDateNY(b.t)))].slice(-20);
+  const histBeforePrev = priorBars.slice(Math.max(0, priorBars.length - 21), priorBars.length - 1);
+
+  const priorDates = [...new Set(priorBars.map((b) => isoDateNY(b.t)))].slice(-10);
 
   return {
     prevBar,
     prev2Bar,
+    histBeforePrev,
     priorDates
   };
 }
@@ -333,106 +337,120 @@ function buildPremarketContextForDate(minuteBars, dateStr, cutoffTime = "09:25:0
   };
 }
 
-function scoreBreakoutCandidate(x) {
+function scoreNightlyCandidate({
+  price,
+  prevDayRet,
+  prevCloseStrength,
+  prevVolRatio,
+  prevDollarVol
+}) {
   let score = 0;
   const notes = [];
 
-  const price = safeNum(x.price, 0);
-  const gapPct = safeNum(x.gapPct, 0);
-  const volRatio = safeNum(x.preVolRatio, 0);
-  const hold = safeNum(x.holdQuality, 0);
-  const spreadBps = x.spreadBps == null ? null : safeNum(x.spreadBps, null);
-  const rangePct = safeNum(x.preRangePct, 99999);
-  const prevDayRet = safeNum(x.prevDayRet, 0);
-  const prevCloseStrength = safeNum(x.prevCloseStrength, 0);
-  const preDollarVol = safeNum(x.preDollarVol, 0);
-  const abovePreVWAP = !!x.abovePreVWAP;
-  const abovePrevHigh = !!x.abovePrevHigh;
-  const source = x.source || "NONE";
-  const feed = x.feed || "unknown";
-
-  if (source !== "REAL_PREMARKET") {
-    notes.push("Gerçek premarket verisi yok");
-    return {
-      score: 0,
-      decision: "ALMA",
-      notes,
-      quality: "LOW"
-    };
-  }
-
-  if (feed === "sip") {
-    score += 4;
-    notes.push("SIP feed");
-  } else {
-    notes.push("IEX feed");
-  }
-
-  if (price >= 0.2 && price <= 8) {
-    score += 8;
-  } else if (price > 8 && price <= 20) {
-    score += 4;
-  } else if (price > 20) {
-    score -= 4;
-    notes.push("Fiyat yüksek, breakout verimi düşebilir");
-  } else if (price < 0.2) {
-    score -= 10;
+  if (price >= 0.2 && price <= 10) score += 10;
+  else if (price > 10 && price <= 20) score += 5;
+  else if (price < 0.2) {
+    score -= 8;
     notes.push("Aşırı düşük fiyat");
   }
 
-  if (gapPct >= 1 && gapPct < 4) {
-    score += 6;
-  } else if (gapPct >= 4 && gapPct < 15) {
-    score += 16;
-  } else if (gapPct >= 15 && gapPct < 35) {
-    score += 20;
-  } else if (gapPct >= 35 && gapPct < 80) {
+  if (prevDayRet >= 4 && prevDayRet < 12) score += 12;
+  else if (prevDayRet >= 12 && prevDayRet < 35) score += 18;
+  else if (prevDayRet >= 35 && prevDayRet < 80) score += 10;
+  else if (prevDayRet > 100) {
+    score -= 6;
+    notes.push("Önceki gün aşırı uzama");
+  } else if (prevDayRet < 0) {
+    score -= 10;
+  }
+
+  if (prevCloseStrength >= 85) score += 18;
+  else if (prevCloseStrength >= 72) score += 10;
+  else if (prevCloseStrength < 45) {
+    score -= 10;
+    notes.push("Zayıf kapanış");
+  }
+
+  if (prevVolRatio >= 1.2 && prevVolRatio < 2.5) score += 10;
+  else if (prevVolRatio >= 2.5 && prevVolRatio < 6) score += 16;
+  else if (prevVolRatio >= 6) score += 18;
+  else if (prevVolRatio < 0.8) {
+    score -= 8;
+  }
+
+  if (prevDollarVol >= 100000 && prevDollarVol < 500000) score += 8;
+  else if (prevDollarVol >= 500000 && prevDollarVol < 3000000) score += 14;
+  else if (prevDollarVol >= 3000000) score += 16;
+  else if (prevDollarVol < 50000) {
+    score -= 10;
+    notes.push("Dollar volume zayıf");
+  }
+
+  score = clamp(Math.round(score), 0, 100);
+  return { score, notes };
+}
+
+function scorePremarketCandidate({
+  feed,
+  price,
+  gapPct,
+  preVolRatio,
+  holdQuality,
+  preRangePct,
+  preDollarVol,
+  abovePreVWAP,
+  abovePrevHigh,
+  spreadBps,
+  source
+}) {
+  let score = 0;
+  const notes = [];
+
+  if (source !== "REAL_PREMARKET") {
+    notes.push("Gerçek premarket verisi yok");
+    return { score: 0, notes };
+  }
+
+  if (feed === "sip") score += 4;
+  else notes.push("IEX feed");
+
+  if (gapPct >= 1 && gapPct < 4) score += 6;
+  else if (gapPct >= 4 && gapPct < 15) score += 16;
+  else if (gapPct >= 15 && gapPct < 35) score += 20;
+  else if (gapPct >= 35 && gapPct < 80) {
     score += 12;
     notes.push("Aşırı sıcak gap");
-  } else if (gapPct >= 80) {
-    score += 4;
-    notes.push("Çok aşırı gap");
   } else if (gapPct < 0) {
     score -= 12;
   }
 
-  if (volRatio >= 0.8 && volRatio < 1.5) {
-    score += 10;
-  } else if (volRatio >= 1.5 && volRatio < 3) {
-    score += 18;
-  } else if (volRatio >= 3) {
+  if (preVolRatio >= 0.8 && preVolRatio < 1.5) score += 10;
+  else if (preVolRatio >= 1.5 && preVolRatio < 3) score += 18;
+  else if (preVolRatio >= 3) {
     score += 26;
     notes.push("Hacim anomalisi güçlü");
-  } else if (volRatio < 0.5) {
-    score -= 12;
-    notes.push("Hacim anomalisi zayıf");
+  } else if (preVolRatio < 0.5) {
+    score -= 10;
   }
 
-  if (preDollarVol >= 100000 && preDollarVol < 400000) {
-    score += 8;
-  } else if (preDollarVol >= 400000 && preDollarVol < 1500000) {
-    score += 14;
-  } else if (preDollarVol >= 1500000) {
-    score += 18;
-  } else if (preDollarVol < 75000) {
+  if (preDollarVol >= 100000 && preDollarVol < 400000) score += 10;
+  else if (preDollarVol >= 400000 && preDollarVol < 1500000) score += 16;
+  else if (preDollarVol >= 1500000) score += 20;
+  else if (preDollarVol < 75000) {
     score -= 12;
     notes.push("Premarket dollar volume zayıf");
   }
 
-  if (hold >= 85) {
-    score += 18;
-  } else if (hold >= 72) {
-    score += 12;
-  } else if (hold >= 60) {
-    score += 6;
-  } else if (hold < 45) {
+  if (holdQuality >= 85) score += 18;
+  else if (holdQuality >= 72) score += 12;
+  else if (holdQuality >= 60) score += 6;
+  else if (holdQuality < 45) {
     score -= 12;
     notes.push("Premarket hold zayıf");
   }
 
-  if (abovePreVWAP) {
-    score += 12;
-  } else {
+  if (abovePreVWAP) score += 12;
+  else {
     score -= 12;
     notes.push("Premarket VWAP altında");
   }
@@ -444,39 +462,23 @@ function scoreBreakoutCandidate(x) {
 
   if (spreadBps == null) {
     notes.push("Spread unavailable");
-  } else if (spreadBps <= 80) {
-    score += 8;
-  } else if (spreadBps <= 150) {
-    score += 4;
-  } else if (spreadBps > 300) {
+  } else if (spreadBps <= 80) score += 8;
+  else if (spreadBps <= 150) score += 4;
+  else if (spreadBps > 300) {
     score -= 12;
     notes.push("Spread geniş");
   }
 
-  if (rangePct <= 20) {
-    score += 4;
-  } else if (rangePct > 50) {
+  if (preRangePct <= 20) score += 4;
+  else if (preRangePct > 50) {
     score -= 8;
     notes.push("Premarket range aşırı geniş");
-  }
-
-  if (prevCloseStrength >= 85) {
-    score += 6;
-  } else if (prevCloseStrength < 45) {
-    score -= 4;
-  }
-
-  if (prevDayRet >= 4 && prevDayRet <= 45) {
-    score += 4;
-  } else if (prevDayRet > 90) {
-    score -= 4;
-    notes.push("Önceki gün aşırı uzama");
   }
 
   if (
     price <= 5 &&
     gapPct >= 12 &&
-    hold >= 70 &&
+    holdQuality >= 70 &&
     preDollarVol >= 200000 &&
     abovePreVWAP
   ) {
@@ -484,61 +486,65 @@ function scoreBreakoutCandidate(x) {
     notes.push("Microcap catalyst uyumu");
   }
 
+  // IEX toleransı: volRatio düşük olsa bile strong hold + dollar vol varsa tamamen öldürme
   if (
-    prevDayRet >= 8 &&
-    prevDayRet <= 35 &&
-    prevCloseStrength >= 80
+    feed === "iex" &&
+    preVolRatio < 0.8 &&
+    preDollarVol >= 350000 &&
+    holdQuality >= 82 &&
+    abovePreVWAP
   ) {
-    score += 6;
-    notes.push("Continuation kalitesi");
+    score += 8;
+    notes.push("IEX hacim toleransı");
   }
 
   score = clamp(Math.round(score), 0, 100);
+  return { score, notes };
+}
+
+function finalDecision({
+  nightlyScore,
+  premarketScore,
+  source,
+  abovePreVWAP,
+  holdQuality,
+  preDollarVol,
+  spreadBps
+}) {
+  // veri yoksa zorla trade sinyali üretme
+  if (source !== "REAL_PREMARKET") {
+    if (nightlyScore >= 68) return "İZLE";
+    return "ALMA";
+  }
 
   const hardReject =
-    preDollarVol < 75000 ||
     !abovePreVWAP ||
-    hold < 50 ||
+    holdQuality < 50 ||
+    preDollarVol < 75000 ||
     (spreadBps != null && spreadBps > 400);
 
-  if (hardReject) {
-    return {
-      score,
-      decision: "ALMA",
-      notes,
-      quality: "LOW"
-    };
-  }
-
-  let decision = "ALMA";
-  let quality = "LOW";
+  if (hardReject) return "ALMA";
 
   if (
-    score >= 76 &&
-    hold >= 72 &&
-    abovePreVWAP &&
-    (
-      volRatio >= 1.5 ||
-      preDollarVol >= 750000
-    ) &&
+    nightlyScore >= 58 &&
+    premarketScore >= 76 &&
+    holdQuality >= 72 &&
     (spreadBps == null || spreadBps <= 220)
   ) {
-    decision = feed === "sip" ? "GÜÇLÜ AL" : "AL";
-    quality = feed === "sip" ? "HIGH" : "MEDIUM";
-  } else if (
-    score >= 60 &&
-    hold >= 60 &&
-    (
-      volRatio >= 0.8 ||
-      preDollarVol >= 250000
-    ) &&
-    (spreadBps == null || spreadBps <= 320)
-  ) {
-    decision = "AL";
-    quality = "MEDIUM";
+    return "GÜÇLÜ AL";
   }
 
-  return { score, decision, notes, quality };
+  if (
+    nightlyScore >= 48 &&
+    premarketScore >= 60 &&
+    holdQuality >= 60 &&
+    (spreadBps == null || spreadBps <= 320)
+  ) {
+    return "AL";
+  }
+
+  if (nightlyScore >= 65) return "İZLE";
+  return "ALMA";
 }
 
 function buildCandidateFromData({
@@ -553,7 +559,7 @@ function buildCandidateFromData({
   const dailyCtx = getDailyContext(dailyBars, tradeDate);
   if (!dailyCtx) return null;
 
-  const { prevBar, prev2Bar, priorDates } = dailyCtx;
+  const { prevBar, prev2Bar, histBeforePrev, priorDates } = dailyCtx;
 
   const prevClose = safeNum(prevBar.c, 0);
   const prevHigh = safeNum(prevBar.h, 0);
@@ -562,6 +568,18 @@ function buildCandidateFromData({
     safeNum(prev2Bar.c, 0) > 0
       ? ((safeNum(prevBar.c, 0) - safeNum(prev2Bar.c, 0)) / safeNum(prev2Bar.c, 0)) * 100
       : 0;
+
+  const avgPrevVol = Math.max(avg(histBeforePrev.map((b) => safeNum(b.v, 0))), 1);
+  const prevVolRatio = safeNum(prevBar.v, 0) / avgPrevVol;
+  const prevDollarVol = safeNum(prevBar.c, 0) * safeNum(prevBar.v, 0);
+
+  const nightly = scoreNightlyCandidate({
+    price: prevClose,
+    prevDayRet,
+    prevCloseStrength,
+    prevVolRatio,
+    prevDollarVol
+  });
 
   const preCtx = buildPremarketContextForDate(minuteBars, tradeDate, cutoffTime);
   const baseline = computeSameTimePremarketBaseline(minuteBars, priorDates, cutoffTime);
@@ -594,30 +612,47 @@ function buildCandidateFromData({
   const abovePrevHigh =
     price != null && prevHigh > 0 ? price > prevHigh : false;
 
-  const scored = scoreBreakoutCandidate({
+  const premkt = scorePremarketCandidate({
+    feed,
     price,
     gapPct,
     preVolRatio,
     holdQuality: preCtx.holdQuality,
-    spreadBps,
     preRangePct: preCtx.rangePct,
-    prevDayRet,
-    prevCloseStrength,
     preDollarVol,
     abovePreVWAP,
     abovePrevHigh,
-    source: preCtx.source,
-    feed
+    spreadBps,
+    source: preCtx.source
   });
+
+  const decision = finalDecision({
+    nightlyScore: nightly.score,
+    premarketScore: premkt.score,
+    source: preCtx.source,
+    abovePreVWAP,
+    holdQuality: safeNum(preCtx.holdQuality, 0),
+    preDollarVol,
+    spreadBps
+  });
+
+  const quality =
+    decision === "GÜÇLÜ AL" ? "HIGH" :
+    decision === "AL" ? "MEDIUM" :
+    decision === "İZLE" ? "WATCH" : "LOW";
 
   return {
     symbol,
     feed,
     source: preCtx.source,
-    decision: scored.decision,
-    quality: scored.quality,
-    score: scored.score,
-    notes: scored.notes.join(" | "),
+    decision,
+    quality,
+
+    nightlyScore: nightly.score,
+    premarketScore: premkt.score,
+    totalScore: Math.max(nightly.score, premkt.score),
+
+    notes: [...nightly.notes, ...premkt.notes].join(" | "),
 
     price: roundSmart(price),
     prevClose: roundSmart(prevClose),
@@ -636,11 +671,12 @@ function buildCandidateFromData({
 
     prevDayRet: roundSmart(prevDayRet),
     prevCloseStrength: roundSmart(prevCloseStrength),
+    prevVolRatio: roundSmart(prevVolRatio),
+    prevDollarVol: Math.round(prevDollarVol),
 
     bid: roundSmart(bid),
     ask: roundSmart(ask),
     spreadBps: roundSmart(spreadBps),
-
     samples: baseline.samples,
     abovePrevHigh
   };
@@ -671,39 +707,31 @@ function buildBacktestOutcome(tradeDayMinuteBars, tradeDate, preLast) {
   };
 }
 
-function summarizeBreakout(rows) {
-  const picks = rows
-    .filter((r) => r.decision === "GÜÇLÜ AL" || r.decision === "AL")
-    .slice(0, 3);
-
+function summarizeRows(rows) {
+  const picks = rows.filter((r) => r.decision === "GÜÇLÜ AL" || r.decision === "AL").slice(0, 3);
   const vals = picks
     .map((r) => (r.realizedPremarketTo30HighPct == null ? null : Number(r.realizedPremarketTo30HighPct)))
     .filter((v) => v != null && Number.isFinite(v));
 
   return {
     total: rows.length,
-    picks: picks.length,
     strong: rows.filter((r) => r.decision === "GÜÇLÜ AL").length,
     buy: rows.filter((r) => r.decision === "AL").length,
+    watch: rows.filter((r) => r.decision === "İZLE").length,
+    topPicks: picks.length,
     avgPremarketTo30: vals.length ? roundSmart(avg(vals)) : null,
     hit10: vals.filter((v) => v >= 10).length,
     hit15: vals.filter((v) => v >= 15).length
   };
 }
 
-async function buildBacktestBreakout(dateStr, symbols) {
+async function buildBacktest(dateStr, symbols) {
   const lookbackStart = new Date(new Date(dateStr).getTime() - 12 * 86400000);
 
-  const dailyStart = zonedDateTimeToUtcISO(
-    lookbackStart.toISOString().slice(0, 10),
-    "00:00"
-  );
+  const dailyStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "00:00");
   const dailyEnd = zonedDateTimeToUtcISO(dateStr, "23:59");
 
-  const priorMinuteStart = zonedDateTimeToUtcISO(
-    lookbackStart.toISOString().slice(0, 10),
-    "04:00"
-  );
+  const priorMinuteStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "04:00");
   const priorMinuteEnd = zonedDateTimeToUtcISO(dateStr, "03:59");
 
   const tradeMinuteStart = zonedDateTimeToUtcISO(dateStr, "04:00");
@@ -721,9 +749,7 @@ async function buildBacktestBreakout(dateStr, symbols) {
     const dailyBars = dailyBarsMap[symbol] || [];
     const prior5 = prior5MinMap[symbol] || [];
     const trade1 = trade1MinMap[symbol] || [];
-    const mergedMinuteBars = [...prior5, ...trade1].sort(
-      (a, b) => new Date(a.t) - new Date(b.t)
-    );
+    const mergedMinuteBars = [...prior5, ...trade1].sort((a, b) => new Date(a.t) - new Date(b.t));
 
     const row = buildCandidateFromData({
       symbol,
@@ -738,7 +764,6 @@ async function buildBacktestBreakout(dateStr, symbols) {
     if (!row) continue;
 
     const outcome = buildBacktestOutcome(trade1, dateStr, row.price);
-
     rows.push({
       ...row,
       realizedPremarketTo30HighPct: outcome.realizedPremarketTo30HighPct,
@@ -749,28 +774,26 @@ async function buildBacktestBreakout(dateStr, symbols) {
   rows.sort((a, b) => {
     const aKey =
       decisionRank(a.decision) * 100000 +
-      safeNum(a.score, 0) * 100 +
-      safeNum(a.preVolRatio, 0);
+      safeNum(a.premarketScore, 0) * 100 +
+      safeNum(a.nightlyScore, 0);
 
     const bKey =
       decisionRank(b.decision) * 100000 +
-      safeNum(b.score, 0) * 100 +
-      safeNum(b.preVolRatio, 0);
+      safeNum(b.premarketScore, 0) * 100 +
+      safeNum(b.nightlyScore, 0);
 
     return bKey - aKey;
   });
 
   return {
     tradeDate: dateStr,
-    session: "backtest-premarket",
-    cutoffTime: "09:25:00",
     feed: ALPACA_FEED,
     rows,
-    summary: summarizeBreakout(rows)
+    summary: summarizeRows(rows)
   };
 }
 
-async function buildLiveBreakout(symbols) {
+async function buildLive(symbols) {
   const session = getSessionLabelNow();
   const today = getTodayNyDate();
   const nowNy = getNowNyTime();
@@ -781,8 +804,8 @@ async function buildLiveBreakout(symbols) {
       feed: ALPACA_FEED,
       cutoffTime: null,
       rows: [],
-      summary: { total: 0, picks: 0, strong: 0, buy: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
-      message: "Hafta sonu. Canlı breakout taraması üretmiyorum."
+      summary: { total: 0, strong: 0, buy: 0, watch: 0, topPicks: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
+      message: "Hafta sonu."
     };
   }
 
@@ -792,19 +815,18 @@ async function buildLiveBreakout(symbols) {
       feed: ALPACA_FEED,
       cutoffTime: null,
       rows: [],
-      summary: { total: 0, picks: 0, strong: 0, buy: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
-      message: "ABD piyasası kapalı. Breakout taraması için premarket/open beklenmeli."
+      summary: { total: 0, strong: 0, buy: 0, watch: 0, topPicks: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
+      message: "ABD piyasası kapalı."
     };
   }
 
-  // ekstra güvenlik: NY saati 04:00'tan önce canlı breakout minute isteği atma
   if (nowNy < "04:00:00") {
     return {
       session,
       feed: ALPACA_FEED,
       cutoffTime: null,
       rows: [],
-      summary: { total: 0, picks: 0, strong: 0, buy: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
+      summary: { total: 0, strong: 0, buy: 0, watch: 0, topPicks: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
       message: "Premarket henüz başlamadı. 04:00 ET sonrası tekrar dene."
     };
   }
@@ -812,8 +834,6 @@ async function buildLiveBreakout(symbols) {
   let cutoffTime = "09:25:00";
   if (session === "premarket") {
     cutoffTime = nowNy > "09:25:00" ? "09:25:00" : nowNy;
-  } else {
-    cutoffTime = "09:25:00";
   }
 
   const lookbackStart = new Date(Date.now() - 12 * 86400000);
@@ -833,21 +853,19 @@ async function buildLiveBreakout(symbols) {
   const tradeStartMs = new Date(tradeMinuteStart).getTime();
   const tradeEndMs = new Date(tradeMinuteEnd).getTime();
 
-  // geçmiş baseline için pencere geçersizse boş map kullan
-  let prior5MinMap = {};
-  for (const s of symbols) prior5MinMap[s] = [];
-
-  // trade penceresi geçersizse canlı tarama üretme
   if (!(tradeEndMs > tradeStartMs)) {
     return {
       session,
       feed: ALPACA_FEED,
       cutoffTime,
       rows: [],
-      summary: { total: 0, picks: 0, strong: 0, buy: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
-      message: "Trade minute penceresi henüz oluşmadı. Birkaç dakika sonra tekrar dene."
+      summary: { total: 0, strong: 0, buy: 0, watch: 0, topPicks: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
+      message: "Trade minute penceresi henüz oluşmadı."
     };
   }
+
+  let prior5MinMap = {};
+  for (const s of symbols) prior5MinMap[s] = [];
 
   const [snapshotsRaw, dailyBarsMap, trade1MinMap] = await Promise.all([
     fetchSnapshots(symbols, ALPACA_FEED),
@@ -856,14 +874,7 @@ async function buildLiveBreakout(symbols) {
   ]);
 
   if (priorEndMs > priorStartMs) {
-    prior5MinMap = await fetchAllBars(
-      symbols,
-      "5Min",
-      priorMinuteStart,
-      priorMinuteEnd,
-      ALPACA_FEED,
-      10000
-    );
+    prior5MinMap = await fetchAllBars(symbols, "5Min", priorMinuteStart, priorMinuteEnd, ALPACA_FEED, 10000);
   }
 
   const rows = [];
@@ -872,10 +883,7 @@ async function buildLiveBreakout(symbols) {
     const dailyBars = dailyBarsMap[symbol] || [];
     const prior5 = prior5MinMap[symbol] || [];
     const trade1 = trade1MinMap[symbol] || [];
-
-    const mergedMinuteBars = [...prior5, ...trade1].sort(
-      (a, b) => new Date(a.t) - new Date(b.t)
-    );
+    const mergedMinuteBars = [...prior5, ...trade1].sort((a, b) => new Date(a.t) - new Date(b.t));
 
     const row = buildCandidateFromData({
       symbol,
@@ -894,13 +902,13 @@ async function buildLiveBreakout(symbols) {
   rows.sort((a, b) => {
     const aKey =
       decisionRank(a.decision) * 100000 +
-      safeNum(a.score, 0) * 100 +
-      safeNum(a.preVolRatio, 0);
+      safeNum(a.premarketScore, 0) * 100 +
+      safeNum(a.nightlyScore, 0);
 
     const bKey =
       decisionRank(b.decision) * 100000 +
-      safeNum(b.score, 0) * 100 +
-      safeNum(b.preVolRatio, 0);
+      safeNum(b.premarketScore, 0) * 100 +
+      safeNum(b.nightlyScore, 0);
 
     return bKey - aKey;
   });
@@ -910,7 +918,7 @@ async function buildLiveBreakout(symbols) {
     feed: ALPACA_FEED,
     cutoffTime,
     rows,
-    summary: summarizeBreakout(rows),
+    summary: summarizeRows(rows),
     message: null
   };
 }
@@ -923,18 +931,18 @@ app.get("/api/default-symbols", (req, res) => {
   res.json({ symbols: DEFAULT_SYMBOLS });
 });
 
-app.get("/api/live-breakout", async (req, res) => {
+app.get("/api/live-lite", async (req, res) => {
   try {
     const symbols = parseSymbols(req.query.symbols);
-    const data = await buildLiveBreakout(symbols);
+    const data = await buildLive(symbols);
     res.json(data);
   } catch (err) {
-    console.error("LIVE_BREAKOUT error:", err);
+    console.error("LIVE_LITE error:", err);
     res.status(500).json({ error: "server error", detail: err.message });
   }
 });
 
-app.get("/api/backtest-breakout", async (req, res) => {
+app.get("/api/backtest-lite", async (req, res) => {
   try {
     const dateStr = String(req.query.date || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
@@ -942,10 +950,10 @@ app.get("/api/backtest-breakout", async (req, res) => {
     }
 
     const symbols = parseSymbols(req.query.symbols);
-    const data = await buildBacktestBreakout(dateStr, symbols);
+    const data = await buildBacktest(dateStr, symbols);
     res.json(data);
   } catch (err) {
-    console.error("BACKTEST_BREAKOUT error:", err);
+    console.error("BACKTEST_LITE error:", err);
     res.status(500).json({ error: "server error", detail: err.message });
   }
 });
@@ -959,5 +967,5 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Breakout engine running on port ${PORT}`);
+  console.log(`Breakout Lite engine running on port ${PORT}`);
 });
