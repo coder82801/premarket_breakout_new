@@ -1,7 +1,7 @@
 {
-  "name": "breakout-lite-architecture",
+  "name": "breakout-lite-engine",
   "version": "1.0.0",
-  "description": "Low-cost breakout scanner using Alpaca IEX + two-stage scoring",
+  "description": "Stable low-cost breakout lite engine using Alpaca IEX",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
