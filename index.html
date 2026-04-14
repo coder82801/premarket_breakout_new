@@ -58,7 +58,7 @@
     .panel.active{display:block}
     .grid{
       display:grid;
-      grid-template-columns:170px 170px 170px;
+      grid-template-columns:170px 170px 170px 170px;
       gap:12px;
       margin:14px 0;
       align-items:end;
@@ -94,11 +94,6 @@
       background:var(--green);
       color:#04101d;
       margin-right:8px;
-    }
-    button.secondary{
-      background:#0d2242;
-      color:var(--text);
-      border:1px solid #2c426b;
     }
     .status{
       margin-top:12px;
@@ -188,7 +183,7 @@
     @media (max-width:1100px){
       .topcards{grid-template-columns:1fr}
     }
-    @media (max-width:800px){
+    @media (max-width:900px){
       .grid{grid-template-columns:1fr 1fr}
       .full{grid-column:1/-1}
     }
@@ -199,11 +194,13 @@
     <div class="card">
       <h1>⚡ Breakout Lite Engine</h1>
       <div class="sub">
-        Düşük maliyetli veri mimarisi: <b>Nightly Score + Premarket Confirm</b>.
+        Bu sürüm scope-locked.
         <br>
-        Amaç kusursuz dip yakalamak değil; dar watchlist içinde hareketin teyitli başlangıcını bulmak.
+        <b>After-hours / closed:</b> sadece nightly shortlist üretir.
         <br>
-        <b>IEX</b> ile çalışacak şekilde tasarlandı. “İZLE”, veri eksikliği altında gece shortlist mantığını korur.
+        <b>Premarket / open:</b> nightly kalite + gerçek premarket teyidi ile karar verir.
+        <br>
+        Watchlist dışı roket avcılığı bu motora dahil değildir.
       </div>
 
       <div class="tabs">
@@ -219,6 +216,10 @@
           <div class="field full">
             <label for="liveSymbols">Sembol listesi</label>
             <textarea id="liveSymbols"></textarea>
+          </div>
+          <div class="field">
+            <label for="liveMode">Mode</label>
+            <input id="liveMode" disabled />
           </div>
           <div class="field">
             <label for="liveSession">Session</label>
@@ -268,14 +269,12 @@
                 <th>Above VWAP</th>
                 <th>Hold</th>
                 <th>Prev Day %</th>
-                <th>Prev Close Strength</th>
-                <th>Spread bps</th>
-                <th>Above Prev High</th>
+                <th>Close Strength</th>
                 <th>Notes</th>
               </tr>
             </thead>
             <tbody id="liveRows">
-              <tr><td colspan="18" class="muted">Henüz tarama yapılmadı.</td></tr>
+              <tr><td colspan="16" class="muted">Henüz tarama yapılmadı.</td></tr>
             </tbody>
           </table>
         </div>
@@ -402,9 +401,9 @@
             <div><span class="k">Nightly</span>${fmt(x.nightlyScore, 0)}</div>
             <div><span class="k">Premkt</span>${fmt(x.premarketScore, 0)}</div>
             <div><span class="k">Price</span>${x.price == null ? "-" : fmt(x.price, x.price < 1 ? 4 : 2)}</div>
-            <div><span class="k">Gap %</span>${fmt(x.gapPct, 2)}</div>
+            <div><span class="k">Gap %</span>${x.gapPct == null ? "-" : fmt(x.gapPct, 2)}</div>
             <div><span class="k">Vol Ratio</span>${fmt(x.preVolRatio, 2)}</div>
-            <div><span class="k">Hold</span>${fmt(x.holdQuality, 1)}</div>
+            <div><span class="k">Hold</span>${x.holdQuality == null ? "-" : fmt(x.holdQuality, 1)}</div>
             <div><span class="k">VWAP</span>${x.preVWAP == null ? "-" : fmt(x.preVWAP, x.preVWAP < 1 ? 4 : 2)}</div>
             <div><span class="k">Source</span>${x.source || "-"}</div>
           </div>
@@ -412,19 +411,34 @@
       `).join("");
     }
 
+    function renderSummary(containerId, summary, extra = []) {
+      const s = summary || {};
+      const el = document.getElementById(containerId);
+      const chips = [
+        ...extra,
+        `Toplam: <b>${s.total ?? 0}</b>`,
+        `GÜÇLÜ AL: <b>${s.strong ?? 0}</b>`,
+        `AL: <b>${s.buy ?? 0}</b>`,
+        `İZLE: <b>${s.watch ?? 0}</b>`,
+        `Top Picks: <b>${s.topPicks ?? 0}</b>`
+      ];
+      if (s.avgPremarketTo30 !== undefined) {
+        chips.push(`Premkt→30m Avg: <b>${s.avgPremarketTo30 == null ? "-" : fmt(s.avgPremarketTo30, 2)}%</b>`);
+        chips.push(`Hit +10: <b>${s.hit10 ?? 0}</b>`);
+        chips.push(`Hit +15: <b>${s.hit15 ?? 0}</b>`);
+      }
+      el.innerHTML = chips.map((x) => `<div class="chip">${x}</div>`).join("");
+    }
+
     function renderLive(data) {
+      document.getElementById("liveMode").value = data.mode || "-";
       document.getElementById("liveSession").value = data.session || "-";
       document.getElementById("liveFeed").value = data.feed || "-";
       document.getElementById("liveCutoff").value = data.cutoffTime || "-";
 
-      const s = data.summary || {};
-      document.getElementById("liveSummary").innerHTML = `
-        <div class="chip">Toplam: <b>${s.total ?? 0}</b></div>
-        <div class="chip">GÜÇLÜ AL: <b>${s.strong ?? 0}</b></div>
-        <div class="chip">AL: <b>${s.buy ?? 0}</b></div>
-        <div class="chip">İZLE: <b>${s.watch ?? 0}</b></div>
-        <div class="chip">Top Picks: <b>${s.topPicks ?? 0}</b></div>
-      `;
+      renderSummary("liveSummary", data.summary, [
+        `Mode: <b>${data.mode || "-"}</b>`
+      ]);
 
       renderTop("liveTop", data.rows || []);
 
@@ -432,7 +446,7 @@
       const rows = data.rows || [];
 
       if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="18" class="muted">${data.message || "Aday bulunamadı."}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="16" class="muted">${data.message || "Aday bulunamadı."}</td></tr>`;
         return;
       }
 
@@ -444,36 +458,26 @@
           <td><b>${x.symbol}</b></td>
           <td>${x.source || "-"}</td>
           <td>${x.price == null ? "-" : fmt(x.price, x.price < 1 ? 4 : 2)}</td>
-          <td>${fmt(x.gapPct, 2)}</td>
+          <td>${x.gapPct == null ? "-" : fmt(x.gapPct, 2)}</td>
           <td>${x.preVol ?? "-"}</td>
           <td>${x.preVolBaselineMedian ?? "-"}</td>
           <td>${fmt(x.preVolRatio, 2)}</td>
           <td>${x.preVWAP == null ? "-" : fmt(x.preVWAP, x.preVWAP < 1 ? 4 : 2)}</td>
           <td>${x.abovePreVWAP ? "YES" : "NO"}</td>
-          <td>${fmt(x.holdQuality, 1)}</td>
+          <td>${x.holdQuality == null ? "-" : fmt(x.holdQuality, 1)}</td>
           <td>${fmt(x.prevDayRet, 2)}</td>
           <td>${fmt(x.prevCloseStrength, 1)}</td>
-          <td>${fmt(x.spreadBps, 1)}</td>
-          <td>${x.abovePrevHigh ? "YES" : "NO"}</td>
-          <td style="text-align:left;white-space:normal;min-width:280px">${x.notes || ""}</td>
+          <td style="text-align:left;white-space:normal;min-width:320px">${x.notes || ""}</td>
         </tr>
       `).join("");
     }
 
     function renderBacktest(data) {
-      const s = data.summary || {};
-      document.getElementById("btSummary").innerHTML = `
-        <div class="chip">Trade Date: <b>${data.tradeDate || "-"}</b></div>
-        <div class="chip">Feed: <b>${data.feed || "-"}</b></div>
-        <div class="chip">Toplam: <b>${s.total ?? 0}</b></div>
-        <div class="chip">GÜÇLÜ AL: <b>${s.strong ?? 0}</b></div>
-        <div class="chip">AL: <b>${s.buy ?? 0}</b></div>
-        <div class="chip">İZLE: <b>${s.watch ?? 0}</b></div>
-        <div class="chip">Top Picks: <b>${s.topPicks ?? 0}</b></div>
-        <div class="chip">Premkt→30m Avg: <b>${s.avgPremarketTo30 == null ? "-" : fmt(s.avgPremarketTo30, 2)}%</b></div>
-        <div class="chip">Hit +10: <b>${s.hit10 ?? 0}</b></div>
-        <div class="chip">Hit +15: <b>${s.hit15 ?? 0}</b></div>
-      `;
+      renderSummary("btSummary", data.summary, [
+        `Trade Date: <b>${data.tradeDate || "-"}</b>`,
+        `Feed: <b>${data.feed || "-"}</b>`,
+        `Mode: <b>${data.mode || "-"}</b>`
+      ]);
 
       renderTop("btTop", data.rows || []);
 
@@ -493,13 +497,13 @@
           <td><b>${x.symbol}</b></td>
           <td>${x.source || "-"}</td>
           <td>${x.price == null ? "-" : fmt(x.price, x.price < 1 ? 4 : 2)}</td>
-          <td>${fmt(x.gapPct, 2)}</td>
+          <td>${x.gapPct == null ? "-" : fmt(x.gapPct, 2)}</td>
           <td>${fmt(x.preVolRatio, 2)}</td>
-          <td>${fmt(x.holdQuality, 1)}</td>
+          <td>${x.holdQuality == null ? "-" : fmt(x.holdQuality, 1)}</td>
           <td>${fmt(x.prevDayRet, 2)}</td>
           <td>${x.realizedPremarketTo30HighPct == null ? "-" : fmt(x.realizedPremarketTo30HighPct, 2)}</td>
           <td>${x.realizedOpenTo30HighPct == null ? "-" : fmt(x.realizedOpenTo30HighPct, 2)}</td>
-          <td style="text-align:left;white-space:normal;min-width:280px">${x.notes || ""}</td>
+          <td style="text-align:left;white-space:normal;min-width:320px">${x.notes || ""}</td>
         </tr>
       `).join("");
     }
@@ -517,7 +521,11 @@
         const symbols = parseSymbols(document.getElementById("liveSymbols").value);
         const data = await apiJson(`/api/live-lite?symbols=${encodeURIComponent(symbols.join(","))}`);
         renderLive(data);
-        setStatus("liveStatus", data.message ? data.message : "Canlı tarama tamamlandı.", data.message ? "warn" : "ok");
+        setStatus(
+          "liveStatus",
+          data.message ? data.message : "Canlı tarama tamamlandı.",
+          data.message ? "warn" : "ok"
+        );
       } catch (err) {
         console.error(err);
         setStatus("liveStatus", `Hata: ${err.message}`, "bad");
@@ -573,6 +581,7 @@
     (async function boot() {
       initTabs();
       setDefaultDate();
+
       try {
         const health = await apiJson("/test");
         await loadDefaults();
