@@ -64,6 +64,7 @@ function timeZoneParts(date, timeZone = "America/New_York") {
     second: "2-digit",
     hour12: false
   });
+
   const parts = dtf.formatToParts(date);
   const out = {};
   for (const p of parts) {
@@ -119,7 +120,7 @@ function getNowNyTime() {
   return `${p.hour}:${p.minute}:${p.second}`;
 }
 
-function getSessionLabelNow() {
+function getNySessionNow() {
   const now = new Date();
   const p = timeZoneParts(now, "America/New_York");
   const hh = Number(p.hour);
@@ -165,13 +166,6 @@ async function alpacaGetJson(url) {
   return JSON.parse(text);
 }
 
-async function fetchSnapshots(symbols, feed = ALPACA_FEED) {
-  const url = new URL("https://data.alpaca.markets/v2/stocks/snapshots");
-  url.searchParams.set("symbols", symbols.join(","));
-  url.searchParams.set("feed", feed);
-  return alpacaGetJson(url.toString());
-}
-
 async function fetchAllBars(symbols, timeframe, startISO, endISO, feed = ALPACA_FEED, limit = 10000) {
   const barsBySymbol = {};
   let pageToken = null;
@@ -210,11 +204,13 @@ async function fetchAllBars(symbols, timeframe, startISO, endISO, feed = ALPACA_
 
 function computeCloseStrength(bar) {
   if (!bar) return null;
+
   const high = safeNum(bar.h, null);
   const low = safeNum(bar.l, null);
   const close = safeNum(bar.c, null);
 
   if ([high, low, close].some((v) => v == null)) return null;
+
   const range = high - low;
   if (range <= 0) return 50;
 
@@ -233,6 +229,7 @@ function computeVWAP(bars) {
   if (!bars || !bars.length) return null;
   let pv = 0;
   let vv = 0;
+
   for (const b of bars) {
     const h = safeNum(b.h, 0);
     const l = safeNum(b.l, 0);
@@ -242,6 +239,7 @@ function computeVWAP(bars) {
     pv += tp * v;
     vv += v;
   }
+
   if (vv <= 0) return null;
   return pv / vv;
 }
@@ -257,23 +255,110 @@ function filterBarsByTime(bars, startTime, endTime) {
   });
 }
 
-function getDailyContext(dailyBars, tradeDate) {
+function getPreviousTradingContext(dailyBars, tradeDate) {
   const sorted = [...(dailyBars || [])].sort((a, b) => new Date(a.t) - new Date(b.t));
   const priorBars = sorted.filter((b) => isoDateNY(b.t) < tradeDate);
+
   if (priorBars.length < 3) return null;
 
-  const prevBar = priorBars[priorBars.length - 1];
-  const prev2Bar = priorBars[priorBars.length - 2];
-  const histBeforePrev = priorBars.slice(Math.max(0, priorBars.length - 21), priorBars.length - 1);
-
+  const last = priorBars[priorBars.length - 1];
+  const prev = priorBars[priorBars.length - 2];
+  const histWindow = priorBars.slice(Math.max(0, priorBars.length - 21), priorBars.length - 1);
   const priorDates = [...new Set(priorBars.map((b) => isoDateNY(b.t)))].slice(-10);
 
   return {
-    prevBar,
-    prev2Bar,
-    histBeforePrev,
+    lastCompleted: last,
+    previous: prev,
+    histWindow,
     priorDates
   };
+}
+
+function buildNightlyMetricsFromDaily(lastCompleted, previous, histWindow) {
+  const prevClose = safeNum(lastCompleted.c, 0);
+  const prevHigh = safeNum(lastCompleted.h, 0);
+  const prevLow = safeNum(lastCompleted.l, 0);
+  const prevVol = safeNum(lastCompleted.v, 0);
+  const prevDollarVol = prevClose * prevVol;
+  const prevCloseStrength = computeCloseStrength(lastCompleted);
+
+  const priorClose = safeNum(previous.c, 0);
+  const prevDayRet =
+    priorClose > 0 ? ((prevClose - priorClose) / priorClose) * 100 : 0;
+
+  const avgPrevVol = Math.max(avg((histWindow || []).map((b) => safeNum(b.v, 0))), 1);
+  const prevVolRatio = prevVol / avgPrevVol;
+  const prevRangePct = computeRangePctFromValues(prevHigh, prevLow, prevClose);
+
+  return {
+    prevClose,
+    prevHigh,
+    prevLow,
+    prevVol,
+    prevDollarVol,
+    prevCloseStrength,
+    prevDayRet,
+    prevVolRatio,
+    prevRangePct
+  };
+}
+
+function scoreNightly(metrics) {
+  let score = 0;
+  const notes = [];
+
+  const price = safeNum(metrics.prevClose, 0);
+  const ret = safeNum(metrics.prevDayRet, 0);
+  const closeStrength = safeNum(metrics.prevCloseStrength, 0);
+  const volRatio = safeNum(metrics.prevVolRatio, 0);
+  const dollarVol = safeNum(metrics.prevDollarVol, 0);
+  const rangePct = safeNum(metrics.prevRangePct, 999);
+
+  if (price >= 0.2 && price <= 8) score += 10;
+  else if (price > 8 && price <= 20) score += 5;
+  else if (price < 0.2) {
+    score -= 10;
+    notes.push("Aşırı düşük fiyat");
+  }
+
+  if (ret >= 4 && ret < 12) score += 12;
+  else if (ret >= 12 && ret < 35) score += 18;
+  else if (ret >= 35 && ret < 80) score += 10;
+  else if (ret > 100) {
+    score -= 6;
+    notes.push("Önceki gün aşırı uzama");
+  } else if (ret < 0) {
+    score -= 10;
+  }
+
+  if (closeStrength >= 85) score += 18;
+  else if (closeStrength >= 72) score += 10;
+  else if (closeStrength < 45) {
+    score -= 10;
+    notes.push("Zayıf kapanış");
+  }
+
+  if (volRatio >= 1.2 && volRatio < 2.5) score += 10;
+  else if (volRatio >= 2.5 && volRatio < 6) score += 16;
+  else if (volRatio >= 6) score += 18;
+  else if (volRatio < 0.8) score -= 8;
+
+  if (dollarVol >= 100000 && dollarVol < 500000) score += 8;
+  else if (dollarVol >= 500000 && dollarVol < 3000000) score += 14;
+  else if (dollarVol >= 3000000) score += 16;
+  else if (dollarVol < 50000) {
+    score -= 10;
+    notes.push("Dollar volume zayıf");
+  }
+
+  if (rangePct <= 12) score += 4;
+  else if (rangePct > 50) {
+    score -= 4;
+    notes.push("Range çok geniş");
+  }
+
+  score = clamp(Math.round(score), 0, 100);
+  return { score, notes };
 }
 
 function computeCumulativePremarketVolumeForDate(minuteBars, dateStr, cutoffTime = "09:25:00") {
@@ -284,10 +369,11 @@ function computeCumulativePremarketVolumeForDate(minuteBars, dateStr, cutoffTime
 
 function computeSameTimePremarketBaseline(minuteBars, priorDates, cutoffTime = "09:25:00") {
   const vols = [];
-  for (const d of priorDates) {
+  for (const d of priorDates || []) {
     const v = computeCumulativePremarketVolumeForDate(minuteBars, d, cutoffTime);
     if (v > 0) vols.push(v);
   }
+
   return {
     baselineMedian: vols.length ? median(vols) : 0,
     baselineAvg: vols.length ? avg(vols) : 0,
@@ -295,13 +381,12 @@ function computeSameTimePremarketBaseline(minuteBars, priorDates, cutoffTime = "
   };
 }
 
-function buildPremarketContextForDate(minuteBars, dateStr, cutoffTime = "09:25:00") {
-  const dayBars = getBarsForDate(minuteBars, dateStr);
+function buildPremarketContext(minuteBars, tradeDate, cutoffTime = "09:25:00") {
+  const dayBars = getBarsForDate(minuteBars, tradeDate);
   const preBars = filterBarsByTime(dayBars, "04:00:00", cutoffTime);
 
   if (!preBars.length) {
     return {
-      hasRealPremarket: false,
       source: "NONE",
       preLast: null,
       preHigh: null,
@@ -309,7 +394,7 @@ function buildPremarketContextForDate(minuteBars, dateStr, cutoffTime = "09:25:0
       preVol: 0,
       preVWAP: null,
       holdQuality: null,
-      rangePct: null,
+      preRangePct: null,
       barCount: 0
     };
   }
@@ -321,10 +406,9 @@ function buildPremarketContextForDate(minuteBars, dateStr, cutoffTime = "09:25:0
   const preVWAP = computeVWAP(preBars);
   const holdQuality =
     preHigh > preLow ? ((preLast - preLow) / (preHigh - preLow)) * 100 : 50;
-  const rangePct = computeRangePctFromValues(preHigh, preLow, preLast);
+  const preRangePct = computeRangePctFromValues(preHigh, preLow, preLast);
 
   return {
-    hasRealPremarket: true,
     source: "REAL_PREMARKET",
     preLast,
     preHigh,
@@ -332,79 +416,25 @@ function buildPremarketContextForDate(minuteBars, dateStr, cutoffTime = "09:25:0
     preVol,
     preVWAP,
     holdQuality,
-    rangePct,
+    preRangePct,
     barCount: preBars.length
   };
 }
 
-function scoreNightlyCandidate({
-  price,
-  prevDayRet,
-  prevCloseStrength,
-  prevVolRatio,
-  prevDollarVol
-}) {
+function scorePremarket(pre) {
   let score = 0;
   const notes = [];
 
-  if (price >= 0.2 && price <= 10) score += 10;
-  else if (price > 10 && price <= 20) score += 5;
-  else if (price < 0.2) {
-    score -= 8;
-    notes.push("Aşırı düşük fiyat");
-  }
-
-  if (prevDayRet >= 4 && prevDayRet < 12) score += 12;
-  else if (prevDayRet >= 12 && prevDayRet < 35) score += 18;
-  else if (prevDayRet >= 35 && prevDayRet < 80) score += 10;
-  else if (prevDayRet > 100) {
-    score -= 6;
-    notes.push("Önceki gün aşırı uzama");
-  } else if (prevDayRet < 0) {
-    score -= 10;
-  }
-
-  if (prevCloseStrength >= 85) score += 18;
-  else if (prevCloseStrength >= 72) score += 10;
-  else if (prevCloseStrength < 45) {
-    score -= 10;
-    notes.push("Zayıf kapanış");
-  }
-
-  if (prevVolRatio >= 1.2 && prevVolRatio < 2.5) score += 10;
-  else if (prevVolRatio >= 2.5 && prevVolRatio < 6) score += 16;
-  else if (prevVolRatio >= 6) score += 18;
-  else if (prevVolRatio < 0.8) {
-    score -= 8;
-  }
-
-  if (prevDollarVol >= 100000 && prevDollarVol < 500000) score += 8;
-  else if (prevDollarVol >= 500000 && prevDollarVol < 3000000) score += 14;
-  else if (prevDollarVol >= 3000000) score += 16;
-  else if (prevDollarVol < 50000) {
-    score -= 10;
-    notes.push("Dollar volume zayıf");
-  }
-
-  score = clamp(Math.round(score), 0, 100);
-  return { score, notes };
-}
-
-function scorePremarketCandidate({
-  feed,
-  price,
-  gapPct,
-  preVolRatio,
-  holdQuality,
-  preRangePct,
-  preDollarVol,
-  abovePreVWAP,
-  abovePrevHigh,
-  spreadBps,
-  source
-}) {
-  let score = 0;
-  const notes = [];
+  const feed = pre.feed;
+  const price = safeNum(pre.price, 0);
+  const gapPct = safeNum(pre.gapPct, 0);
+  const preVolRatio = safeNum(pre.preVolRatio, 0);
+  const holdQuality = safeNum(pre.holdQuality, 0);
+  const preRangePct = safeNum(pre.preRangePct, 999);
+  const preDollarVol = safeNum(pre.preDollarVol, 0);
+  const abovePreVWAP = !!pre.abovePreVWAP;
+  const abovePrevHigh = !!pre.abovePrevHigh;
+  const source = pre.source || "NONE";
 
   if (source !== "REAL_PREMARKET") {
     notes.push("Gerçek premarket verisi yok");
@@ -413,6 +443,10 @@ function scorePremarketCandidate({
 
   if (feed === "sip") score += 4;
   else notes.push("IEX feed");
+
+  if (price >= 0.2 && price <= 8) score += 6;
+  else if (price > 8 && price <= 20) score += 3;
+  else if (price < 0.2) score -= 8;
 
   if (gapPct >= 1 && gapPct < 4) score += 6;
   else if (gapPct >= 4 && gapPct < 15) score += 16;
@@ -460,15 +494,6 @@ function scorePremarketCandidate({
     notes.push("Previous day high üstünde");
   }
 
-  if (spreadBps == null) {
-    notes.push("Spread unavailable");
-  } else if (spreadBps <= 80) score += 8;
-  else if (spreadBps <= 150) score += 4;
-  else if (spreadBps > 300) {
-    score -= 12;
-    notes.push("Spread geniş");
-  }
-
   if (preRangePct <= 20) score += 4;
   else if (preRangePct > 50) {
     score -= 8;
@@ -486,7 +511,6 @@ function scorePremarketCandidate({
     notes.push("Microcap catalyst uyumu");
   }
 
-  // IEX toleransı: volRatio düşük olsa bile strong hold + dollar vol varsa tamamen öldürme
   if (
     feed === "iex" &&
     preVolRatio < 0.8 &&
@@ -502,16 +526,7 @@ function scorePremarketCandidate({
   return { score, notes };
 }
 
-function finalDecision({
-  nightlyScore,
-  premarketScore,
-  source,
-  abovePreVWAP,
-  holdQuality,
-  preDollarVol,
-  spreadBps
-}) {
-  // veri yoksa zorla trade sinyali üretme
+function decideLiteRow({ nightlyScore, premarketScore, source, holdQuality, abovePreVWAP, preDollarVol }) {
   if (source !== "REAL_PREMARKET") {
     if (nightlyScore >= 68) return "İZLE";
     return "ALMA";
@@ -519,82 +534,50 @@ function finalDecision({
 
   const hardReject =
     !abovePreVWAP ||
-    holdQuality < 50 ||
-    preDollarVol < 75000 ||
-    (spreadBps != null && spreadBps > 400);
+    safeNum(holdQuality, 0) < 50 ||
+    safeNum(preDollarVol, 0) < 75000;
 
   if (hardReject) return "ALMA";
 
   if (
     nightlyScore >= 58 &&
     premarketScore >= 76 &&
-    holdQuality >= 72 &&
-    (spreadBps == null || spreadBps <= 220)
+    holdQuality >= 72
   ) {
     return "GÜÇLÜ AL";
   }
 
   if (
     nightlyScore >= 48 &&
-    premarketScore >= 60 &&
-    holdQuality >= 60 &&
-    (spreadBps == null || spreadBps <= 320)
+    premarketScore >= 62 &&
+    holdQuality >= 60
   ) {
     return "AL";
   }
 
-  if (nightlyScore >= 65) return "İZLE";
+  if (nightlyScore >= 68) return "İZLE";
   return "ALMA";
 }
 
-function buildCandidateFromData({
-  symbol,
-  feed,
-  snapshot,
-  dailyBars,
-  minuteBars,
-  tradeDate,
-  cutoffTime
-}) {
-  const dailyCtx = getDailyContext(dailyBars, tradeDate);
-  if (!dailyCtx) return null;
+function buildBacktestRow(symbol, feed, dailyBars, minuteBars, tradeDate) {
+  const ctx = getPreviousTradingContext(dailyBars, tradeDate);
+  if (!ctx) return null;
 
-  const { prevBar, prev2Bar, histBeforePrev, priorDates } = dailyCtx;
+  const nightlyMetrics = buildNightlyMetricsFromDaily(
+    ctx.lastCompleted,
+    ctx.previous,
+    ctx.histWindow
+  );
 
-  const prevClose = safeNum(prevBar.c, 0);
-  const prevHigh = safeNum(prevBar.h, 0);
-  const prevCloseStrength = computeCloseStrength(prevBar);
-  const prevDayRet =
-    safeNum(prev2Bar.c, 0) > 0
-      ? ((safeNum(prevBar.c, 0) - safeNum(prev2Bar.c, 0)) / safeNum(prev2Bar.c, 0)) * 100
-      : 0;
-
-  const avgPrevVol = Math.max(avg(histBeforePrev.map((b) => safeNum(b.v, 0))), 1);
-  const prevVolRatio = safeNum(prevBar.v, 0) / avgPrevVol;
-  const prevDollarVol = safeNum(prevBar.c, 0) * safeNum(prevBar.v, 0);
-
-  const nightly = scoreNightlyCandidate({
-    price: prevClose,
-    prevDayRet,
-    prevCloseStrength,
-    prevVolRatio,
-    prevDollarVol
-  });
-
-  const preCtx = buildPremarketContextForDate(minuteBars, tradeDate, cutoffTime);
-  const baseline = computeSameTimePremarketBaseline(minuteBars, priorDates, cutoffTime);
-
-  const latestQuote = snapshot?.latestQuote || {};
-  const bid = safeNum(latestQuote.bp, null);
-  const ask = safeNum(latestQuote.ap, null);
-  const spreadBps =
-    bid != null && ask != null && bid > 0 && ask >= bid
-      ? ((ask - bid) / ((ask + bid) / 2)) * 10000
-      : null;
+  const nightly = scoreNightly(nightlyMetrics);
+  const preCtx = buildPremarketContext(minuteBars, tradeDate, "09:25:00");
+  const baseline = computeSameTimePremarketBaseline(minuteBars, ctx.priorDates, "09:25:00");
 
   const price = preCtx.preLast;
   const gapPct =
-    price != null && prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : null;
+    price != null && nightlyMetrics.prevClose > 0
+      ? ((price - nightlyMetrics.prevClose) / nightlyMetrics.prevClose) * 100
+      : null;
 
   const preVolRatio =
     preCtx.preVol > 0 && baseline.baselineMedian > 0
@@ -602,61 +585,47 @@ function buildCandidateFromData({
       : 0;
 
   const preDollarVol =
-    price != null && preCtx.preVol > 0
-      ? price * preCtx.preVol
-      : 0;
+    price != null && preCtx.preVol > 0 ? price * preCtx.preVol : 0;
 
   const abovePreVWAP =
     preCtx.preVWAP != null && price != null ? price > preCtx.preVWAP : false;
 
   const abovePrevHigh =
-    price != null && prevHigh > 0 ? price > prevHigh : false;
+    price != null && nightlyMetrics.prevHigh > 0 ? price > nightlyMetrics.prevHigh : false;
 
-  const premkt = scorePremarketCandidate({
+  const premarket = scorePremarket({
     feed,
+    source: preCtx.source,
     price,
     gapPct,
     preVolRatio,
     holdQuality: preCtx.holdQuality,
-    preRangePct: preCtx.rangePct,
+    preRangePct: preCtx.preRangePct,
     preDollarVol,
     abovePreVWAP,
-    abovePrevHigh,
-    spreadBps,
-    source: preCtx.source
+    abovePrevHigh
   });
 
-  const decision = finalDecision({
+  const decision = decideLiteRow({
     nightlyScore: nightly.score,
-    premarketScore: premkt.score,
+    premarketScore: premarket.score,
     source: preCtx.source,
+    holdQuality: preCtx.holdQuality,
     abovePreVWAP,
-    holdQuality: safeNum(preCtx.holdQuality, 0),
-    preDollarVol,
-    spreadBps
+    preDollarVol
   });
-
-  const quality =
-    decision === "GÜÇLÜ AL" ? "HIGH" :
-    decision === "AL" ? "MEDIUM" :
-    decision === "İZLE" ? "WATCH" : "LOW";
 
   return {
     symbol,
-    feed,
     source: preCtx.source,
     decision,
-    quality,
-
     nightlyScore: nightly.score,
-    premarketScore: premkt.score,
-    totalScore: Math.max(nightly.score, premkt.score),
-
-    notes: [...nightly.notes, ...premkt.notes].join(" | "),
+    premarketScore: premarket.score,
+    totalScore: Math.max(nightly.score, premarket.score),
 
     price: roundSmart(price),
-    prevClose: roundSmart(prevClose),
-    prevHigh: roundSmart(prevHigh),
+    prevClose: roundSmart(nightlyMetrics.prevClose),
+    prevHigh: roundSmart(nightlyMetrics.prevHigh),
     gapPct: roundSmart(gapPct),
 
     preVol: Math.round(preCtx.preVol),
@@ -667,18 +636,59 @@ function buildCandidateFromData({
     preVWAP: roundSmart(preCtx.preVWAP),
     abovePreVWAP,
     holdQuality: roundSmart(preCtx.holdQuality),
-    preRangePct: roundSmart(preCtx.rangePct),
+    preRangePct: roundSmart(preCtx.preRangePct),
 
-    prevDayRet: roundSmart(prevDayRet),
-    prevCloseStrength: roundSmart(prevCloseStrength),
-    prevVolRatio: roundSmart(prevVolRatio),
-    prevDollarVol: Math.round(prevDollarVol),
+    prevDayRet: roundSmart(nightlyMetrics.prevDayRet),
+    prevCloseStrength: roundSmart(nightlyMetrics.prevCloseStrength),
+    prevVolRatio: roundSmart(nightlyMetrics.prevVolRatio),
+    prevDollarVol: Math.round(nightlyMetrics.prevDollarVol),
 
-    bid: roundSmart(bid),
-    ask: roundSmart(ask),
-    spreadBps: roundSmart(spreadBps),
-    samples: baseline.samples,
-    abovePrevHigh
+    notes: [...nightly.notes, ...premarket.notes].join(" | ")
+  };
+}
+
+function buildNightlyOnlyRow(symbol, dailyBars) {
+  const sorted = [...(dailyBars || [])].sort((a, b) => new Date(a.t) - new Date(b.t));
+  if (sorted.length < 3) return null;
+
+  const lastCompleted = sorted[sorted.length - 1];
+  const previous = sorted[sorted.length - 2];
+  const histWindow = sorted.slice(Math.max(0, sorted.length - 22), sorted.length - 1);
+
+  const nightlyMetrics = buildNightlyMetricsFromDaily(lastCompleted, previous, histWindow);
+  const nightly = scoreNightly(nightlyMetrics);
+
+  const decision = nightly.score >= 68 ? "İZLE" : "ALMA";
+
+  return {
+    symbol,
+    source: "NONE",
+    decision,
+    nightlyScore: nightly.score,
+    premarketScore: 0,
+    totalScore: nightly.score,
+
+    price: null,
+    prevClose: roundSmart(nightlyMetrics.prevClose),
+    prevHigh: roundSmart(nightlyMetrics.prevHigh),
+    gapPct: null,
+
+    preVol: 0,
+    preVolBaselineMedian: 0,
+    preVolRatio: 0,
+    preDollarVol: 0,
+
+    preVWAP: null,
+    abovePreVWAP: false,
+    holdQuality: null,
+    preRangePct: null,
+
+    prevDayRet: roundSmart(nightlyMetrics.prevDayRet),
+    prevCloseStrength: roundSmart(nightlyMetrics.prevCloseStrength),
+    prevVolRatio: roundSmart(nightlyMetrics.prevVolRatio),
+    prevDollarVol: Math.round(nightlyMetrics.prevDollarVol),
+
+    notes: nightly.notes.join(" | ")
   };
 }
 
@@ -710,8 +720,8 @@ function buildBacktestOutcome(tradeDayMinuteBars, tradeDate, preLast) {
 function summarizeRows(rows) {
   const picks = rows.filter((r) => r.decision === "GÜÇLÜ AL" || r.decision === "AL").slice(0, 3);
   const vals = picks
-    .map((r) => (r.realizedPremarketTo30HighPct == null ? null : Number(r.realizedPremarketTo30HighPct)))
-    .filter((v) => v != null && Number.isFinite(v));
+    .map((r) => safeNum(r.realizedPremarketTo30HighPct, null))
+    .filter((v) => v != null);
 
   return {
     total: rows.length,
@@ -728,10 +738,16 @@ function summarizeRows(rows) {
 async function buildBacktest(dateStr, symbols) {
   const lookbackStart = new Date(new Date(dateStr).getTime() - 12 * 86400000);
 
-  const dailyStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "00:00");
+  const dailyStart = zonedDateTimeToUtcISO(
+    lookbackStart.toISOString().slice(0, 10),
+    "00:00"
+  );
   const dailyEnd = zonedDateTimeToUtcISO(dateStr, "23:59");
 
-  const priorMinuteStart = zonedDateTimeToUtcISO(lookbackStart.toISOString().slice(0, 10), "04:00");
+  const priorMinuteStart = zonedDateTimeToUtcISO(
+    lookbackStart.toISOString().slice(0, 10),
+    "04:00"
+  );
   const priorMinuteEnd = zonedDateTimeToUtcISO(dateStr, "03:59");
 
   const tradeMinuteStart = zonedDateTimeToUtcISO(dateStr, "04:00");
@@ -751,19 +767,11 @@ async function buildBacktest(dateStr, symbols) {
     const trade1 = trade1MinMap[symbol] || [];
     const mergedMinuteBars = [...prior5, ...trade1].sort((a, b) => new Date(a.t) - new Date(b.t));
 
-    const row = buildCandidateFromData({
-      symbol,
-      feed: ALPACA_FEED,
-      snapshot: null,
-      dailyBars,
-      minuteBars: mergedMinuteBars,
-      tradeDate: dateStr,
-      cutoffTime: "09:25:00"
-    });
-
+    const row = buildBacktestRow(symbol, ALPACA_FEED, dailyBars, mergedMinuteBars, dateStr);
     if (!row) continue;
 
     const outcome = buildBacktestOutcome(trade1, dateStr, row.price);
+
     rows.push({
       ...row,
       realizedPremarketTo30HighPct: outcome.realizedPremarketTo30HighPct,
@@ -786,20 +794,24 @@ async function buildBacktest(dateStr, symbols) {
   });
 
   return {
+    mode: "BACKTEST_FULL",
     tradeDate: dateStr,
+    session: "backtest",
     feed: ALPACA_FEED,
+    cutoffTime: "09:25:00",
     rows,
     summary: summarizeRows(rows)
   };
 }
 
 async function buildLive(symbols) {
-  const session = getSessionLabelNow();
+  const session = getNySessionNow();
   const today = getTodayNyDate();
   const nowNy = getNowNyTime();
 
   if (session === "weekend") {
     return {
+      mode: "NO_MARKET",
       session,
       feed: ALPACA_FEED,
       cutoffTime: null,
@@ -809,19 +821,45 @@ async function buildLive(symbols) {
     };
   }
 
-  if (session === "closed") {
+  const lookbackStart = new Date(Date.now() - 12 * 86400000);
+  const lookbackDateStr = lookbackStart.toISOString().slice(0, 10);
+
+  const dailyStart = zonedDateTimeToUtcISO(lookbackDateStr, "00:00");
+  const dailyEnd = new Date().toISOString();
+
+  // After-hours ve closed için sadece nightly shortlist
+  if (session === "afterhours" || session === "closed") {
+    const dailyBarsMap = await fetchAllBars(symbols, "1Day", dailyStart, dailyEnd, ALPACA_FEED, 10000);
+    const rows = [];
+
+    for (const symbol of symbols) {
+      const row = buildNightlyOnlyRow(symbol, dailyBarsMap[symbol] || []);
+      if (!row) continue;
+      rows.push(row);
+    }
+
+    rows.sort((a, b) => {
+      const aKey = decisionRank(a.decision) * 100000 + safeNum(a.nightlyScore, 0);
+      const bKey = decisionRank(b.decision) * 100000 + safeNum(b.nightlyScore, 0);
+      return bKey - aKey;
+    });
+
     return {
+      mode: "NIGHTLY_ONLY",
       session,
       feed: ALPACA_FEED,
       cutoffTime: null,
-      rows: [],
-      summary: { total: 0, strong: 0, buy: 0, watch: 0, topPicks: 0, avgPremarketTo30: null, hit10: 0, hit15: 0 },
-      message: "ABD piyasası kapalı."
+      rows,
+      summary: summarizeRows(rows),
+      message: session === "afterhours"
+        ? "After-hours modunda sadece nightly shortlist üretilir."
+        : "Piyasa kapalı. Sadece nightly shortlist üretilir."
     };
   }
 
   if (nowNy < "04:00:00") {
     return {
+      mode: "NO_PREMARKET_YET",
       session,
       feed: ALPACA_FEED,
       cutoffTime: null,
@@ -834,13 +872,9 @@ async function buildLive(symbols) {
   let cutoffTime = "09:25:00";
   if (session === "premarket") {
     cutoffTime = nowNy > "09:25:00" ? "09:25:00" : nowNy;
+  } else if (session === "open") {
+    cutoffTime = "09:25:00";
   }
-
-  const lookbackStart = new Date(Date.now() - 12 * 86400000);
-  const lookbackDateStr = lookbackStart.toISOString().slice(0, 10);
-
-  const dailyStart = zonedDateTimeToUtcISO(lookbackDateStr, "00:00");
-  const dailyEnd = new Date().toISOString();
 
   const priorMinuteStart = zonedDateTimeToUtcISO(lookbackDateStr, "04:00");
   const priorMinuteEnd = zonedDateTimeToUtcISO(today, "03:59");
@@ -855,6 +889,7 @@ async function buildLive(symbols) {
 
   if (!(tradeEndMs > tradeStartMs)) {
     return {
+      mode: "WAITING_WINDOW",
       session,
       feed: ALPACA_FEED,
       cutoffTime,
@@ -867,14 +902,20 @@ async function buildLive(symbols) {
   let prior5MinMap = {};
   for (const s of symbols) prior5MinMap[s] = [];
 
-  const [snapshotsRaw, dailyBarsMap, trade1MinMap] = await Promise.all([
-    fetchSnapshots(symbols, ALPACA_FEED),
+  const [dailyBarsMap, trade1MinMap] = await Promise.all([
     fetchAllBars(symbols, "1Day", dailyStart, dailyEnd, ALPACA_FEED, 10000),
     fetchAllBars(symbols, "1Min", tradeMinuteStart, tradeMinuteEnd, ALPACA_FEED, 10000)
   ]);
 
   if (priorEndMs > priorStartMs) {
-    prior5MinMap = await fetchAllBars(symbols, "5Min", priorMinuteStart, priorMinuteEnd, ALPACA_FEED, 10000);
+    prior5MinMap = await fetchAllBars(
+      symbols,
+      "5Min",
+      priorMinuteStart,
+      priorMinuteEnd,
+      ALPACA_FEED,
+      10000
+    );
   }
 
   const rows = [];
@@ -885,16 +926,7 @@ async function buildLive(symbols) {
     const trade1 = trade1MinMap[symbol] || [];
     const mergedMinuteBars = [...prior5, ...trade1].sort((a, b) => new Date(a.t) - new Date(b.t));
 
-    const row = buildCandidateFromData({
-      symbol,
-      feed: ALPACA_FEED,
-      snapshot: snapshotsRaw[symbol] || {},
-      dailyBars,
-      minuteBars: mergedMinuteBars,
-      tradeDate: today,
-      cutoffTime
-    });
-
+    const row = buildBacktestRow(symbol, ALPACA_FEED, dailyBars, mergedMinuteBars, today);
     if (!row) continue;
     rows.push(row);
   }
@@ -914,6 +946,7 @@ async function buildLive(symbols) {
   });
 
   return {
+    mode: "PREMARKET_CONFIRM",
     session,
     feed: ALPACA_FEED,
     cutoffTime,
@@ -967,5 +1000,5 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Breakout Lite engine running on port ${PORT}`);
+  console.log(`Breakout Lite Engine running on port ${PORT}`);
 });
